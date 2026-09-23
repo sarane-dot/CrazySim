@@ -1,0 +1,15 @@
+crazyflie_server:
+  ros__parameters:
+    robots:
+      - cf0
+    cf0:
+      uri: "udp://127.0.0.1:19850"
+      initial_position: [0.0, 0.0, 0.0]
+      type: cf2
+    robot_types:
+      cf2:
+        motion_capture:
+          enabled: false
+          type: "none"
+          marker: "default"
+          dynamics: "default"

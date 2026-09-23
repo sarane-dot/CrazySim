@@ -1,0 +1,423 @@
+<p align="center">
+  <img src="docs/crazysim_logo.svg" alt="CrazySim Logo" width="440"/>
+</p>
+
+# CrazySim: A Software-in-the-Loop Simulator for the Crazyflie Nano Quadrotor
+This code accompanies the work in the ICRA 2024 paper "CrazySim: A Software-in-the-Loop Simulator for the Crazyflie Nano Quadrotor" [1]. CrazySim is a simulator platform that runs Crazyflie firmware in a simulation state on a desktop machine with integrated communication with Gazebo sensors and physics engine. The simulated Crazyflie firmware is intended to communicate with crazyflie-lib-python ([cflib](https://github.com/bitcraze/crazyflie-lib-python)). This enables simulating the behavior of CFLib scripts that are intended to control single or multiple Crazyflies in a real hardware demonstration. With CFLib communication capabilities, users can choose to use [CrazySwarm2](https://github.com/IMRCLab/crazyswarm2) with CFLib as the backend for a ROS 2 interface with the simulator. 
+
+![Architecture Diagram](https://github.com/user-attachments/assets/94f180aa-f7e7-42e8-b877-ce350958b0f1)
+
+## References
+
+[1] C. Llanes, Z. Kakish, K. Williams, and S. Coogan, “CrazySim: A Software-in-the-Loop Simulator for the Crazyflie Nano Quadrotor,” 
+2024 IEEE International Conference on Robotics and Automation (ICRA), 2024.
+
+
+```console
+@INPROCEEDINGS{LlanesICRA2024,
+  author={Llanes, Christian and Kakish, Zahi and Williams, Kyle and Coogan, Samuel},
+  booktitle={2024 IEEE International Conference on Robotics and Automation (ICRA)}, 
+  title={CrazySim: A Software-in-the-Loop Simulator for the Crazyflie Nano Quadrotor}, 
+  year={2024},
+  volume={},
+  number={},
+  pages={12248-12254},
+  keywords={Sockets;Prediction algorithms;Hardware;Robustness;Sensors;Trajectory;Task analysis},
+  doi={10.1109/ICRA57147.2024.10610906}}
+
+```
+
+# CrazySim Setup
+
+## Installation
+
+To install this repository use the recursive command as shown below for HTTPS:
+```bash
+git clone https://github.com/gtfactslab/CrazySim.git --recursive
+```
+
+## crazyflie-lib-python
+The official cflib now supports our udpdriver implementation as of [99ad0e3](https://github.com/bitcraze/crazyflie-lib-python/commit/99ad0e3e5be8ec717fd1b0fce0b7320e4acefe6e). Install the official cflib from source using the [official install instructions](https://github.com/bitcraze/crazyflie-lib-python/blob/master/docs/installation/install.md). For now source is the only option because pip install will install the latest release which is 0.1.31 which was before this implementation was pushed.
+
+## crazyflie-clients-python [Optional]
+If you want to test a single Crazyflie with crazyflie-clients-python for SITL, then run the following commands in your terminal to install the cfclient.
+
+We have verified success with commit [`d649b66`](https://github.com/bitcraze/crazyflie-clients-python/commit/d649b6615a58ac0eb34aa72a4edef4c5d821eeab).
+```bash
+git clone https://github.com/bitcraze/crazyflie-clients-python
+cd crazyflie-clients-python
+pip install -e .
+```
+
+## crazyflie-firmware
+[WARNING] This is a modified version of the crazyflie-firmware for software-in-the-loop. At this time do not use this firmware for your hardware. SITL integration with Kbuild is being developed for cross-platform building.
+
+The installation instructions and usage are referenced in the [documentation](https://github.com/llanesc/crazyflie-firmware/blob/crazysim/documentation.md) file.
+
+### Dependencies
+Run the following commands to install dependencies.
+```bash
+sudo apt install cmake build-essential
+pip install Jinja2
+```
+
+### Building the firmware
+```bash
+cd crazyflie-firmware
+mkdir -p sitl_make/build && cd $_
+cmake ..
+make all
+```
+
+## How to use
+
+CrazySim supports two physics backends: **Gazebo** and **MuJoCo**. Both use the same SITL firmware and CFLib interface.
+
+Open a terminal and run
+```bash
+cd crazyflie-firmware
+```
+
+Then follow the instructions for your chosen backend below.
+
+Connect with CFLib using URI `udp://127.0.0.1:19850`. For drone swarms increment the port for each additional drone.
+
+You can also test a single crazyflie using the cfclient if you installed it from the crazyflie-clients-python section. Click on the SITL checkbox, scan, and connect.
+
+---
+
+## Gazebo
+
+Install [Gazebo Garden](https://gazebosim.org/docs/garden/install_ubuntu) before building the firmware.
+
+### Gazebo Models
+
+| Model | Description |
+| --- | --- |
+| crazyflie | The default Crazyflie 2.1. |
+| crazyflie_thrust_upgrade | The Crazyflie 2.1 with thrust upgrade bundle ([cf2x_T350](https://github.com/utiasDSL/drone-models) parameters). |
+
+#### Option 1: Single agent
+```bash
+bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_singleagent.sh -m crazyflie -x 0 -y 0
+```
+
+#### Option 2: Multiple agents in a square formation
+```bash
+bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_multiagent_square.sh -n 8 -m crazyflie
+```
+
+#### Option 3: Multiple agents from a coordinates file
+```bash
+bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_multiagent_text.sh -m crazyflie -f single_origin.txt
+```
+
+---
+
+## MuJoCo
+
+[MuJoCo](https://mujoco.org/) does not require Gazebo and tends to run with better real-time performance. Drone models and parameters are provided by the [drone-models](https://github.com/utiasDSL/drone-models) submodule.
+
+The MuJoCo backend includes aerodynamic effects from the drone-models `first_principles` model:
+- **Rotor drag**: velocity-dependent drag force using the `drag_matrix` from `params.toml`
+- **Gyroscopic precession**: torque from body angular velocity and net rotor angular momentum
+
+### MuJoCo Dependencies
+```bash
+pip install mujoco numpy
+```
+
+If on Python < 3.11, also install `tomli`:
+```bash
+pip install tomli
+```
+
+Initialize the drone-models submodule for mesh assets:
+```bash
+git submodule update --init tools/crazyflie-simulation/simulator_files/mujoco/drone-models
+```
+
+### MuJoCo Models
+
+| Model | Description |
+| --- | --- |
+| cf2x_T350 | Crazyflie 2.x with Thrust upgrade kit (default) |
+| cf2x_L250 | Crazyflie 2.x Standard Configuration |
+| cf2x_P250 | Crazyflie 2.x Performance variant |
+| cf21B_500 | Crazyflie 2.1B Brushless |
+
+### Launch Scripts
+Several launch scripts are included to simplify startup.
+
+#### Option 1: Single agent
+```bash
+bash tools/crazyflie-simulation/simulator_files/mujoco/launch/sitl_singleagent.sh -m cf2x_T350 -x 0 -y 0
+```
+
+#### Option 2: Multiple agents in a square formation
+```bash
+bash tools/crazyflie-simulation/simulator_files/mujoco/launch/sitl_multiagent_square.sh -n 8 -m cf2x_T350
+```
+
+#### Option 3: Multiple agents from a coordinates file
+```bash
+bash tools/crazyflie-simulation/simulator_files/mujoco/launch/sitl_multiagent_text.sh -m cf2x_T350 -f single_origin.txt
+```
+
+---
+
+### Coordinates File Format
+
+The `-f` flag specifies a coordinates file from `crazyflie-firmware/tools/crazyflie-simulation/drone_spawn_list/`. Each line contains an X,Y spawn position in CSV format:
+
+```
+0.0,0.0
+1.0,0.0
+0.0,1.0
+1.0,1.0
+```
+
+A default `single_origin.txt` file is included. To create your own, add a new `.txt` file to the `drone_spawn_list/` directory.
+
+---
+
+### Color LEDs (Top & Bottom)
+
+The SITL firmware includes color LED deck drivers (`bcColorLedTop` and `bcColorLedBot`) that send RGB data to the simulator independently for the top and bottom LEDs. The MuJoCo backend renders these colors in real-time on the drone's `led_top` and `led_bot` materials and adds point light sources so the LEDs illuminate the surrounding scene. A headlight is also supported and rendered as a forward-facing spot light. LED RGB values set from cflib or cfclient are reflected in the simulation. A `scene_dark.xml` scene is provided to best visualize the LED lighting effects.
+
+---
+
+### 8-Drone Circling Demo (MuJoCo)
+
+Launch 8 drones using the `circling_square.txt` spawn file:
+```bash
+bash tools/crazyflie-simulation/simulator_files/mujoco/launch/sitl_multiagent_text.sh -m cf2x_T350 -f circling_square.txt -M 0.0379
+```
+
+Then in another terminal, run the circling square demo script:
+```bash
+cd crazyflie-lib-python/examples/autonomy
+python3 circling_square_demo.py
+```
+
+Before running, update the `uris` list in the script to use SITL UDP URIs (`udp://127.0.0.1:19850` through `udp://127.0.0.1:19857` for 8 drones).
+
+
+https://github.com/user-attachments/assets/c5d08c86-e879-4121-aecf-5adb6c083b6c
+
+---
+
+### Multiranger
+
+The MuJoCo backend supports the Multi-ranger deck, providing simulated ToF range sensors (front, back, left, right, up). An obstacle scene is included and can be loaded with the `-s` flag:
+```bash
+bash tools/crazyflie-simulation/simulator_files/mujoco/launch/sitl_singleagent.sh -m cf2x_T350 -x 0 -y 0 -s scene_obstacles.xml
+```
+
+This can be demonstrated using the `multiranger_pointcloud.py` example from [crazyflie-lib-python](https://github.com/bitcraze/crazyflie-lib-python/blob/master/examples/multiranger/multiranger_pointcloud.py), which renders a real-time 3D point cloud while allowing manual flight control via keyboard. To use it with SITL, change the URI to `udp://127.0.0.1:19850` as with the other examples.
+
+https://github.com/user-attachments/assets/f1377d12-ce14-4be9-8d28-07209eee7b6c
+
+
+---
+
+### AI-Deck Camera (MuJoCo)
+
+The MuJoCo backend supports simulated AI-deck camera streaming using the CPX protocol. A companion script `crazysim_cpx.py` emulates the ESP32 WiFi bridge, allowing unmodified cflib AI-deck scripts (e.g. `fpv.py`) to receive camera frames from the simulator exactly as they would from real hardware.
+
+![CrazySim AI-Deck Camera SITL Architecture](docs/crazysim_cpx_architecture.png)
+
+**How it works:**
+- `crazysim.py` renders the drone's FPV camera using MuJoCo's offscreen renderer, converts to grayscale (matching the Himax HM01B0 sensor), and sends frames via UDP to `crazysim_cpx.py`
+- `crazysim_cpx.py` wraps frames in CPX APP packets with the `0xBC` image header and bridges CRTP commands between cflib and the firmware — acting as the ESP32
+- cflib clients connect via TCP and see the same CPX protocol as real hardware
+
+**Launch:**
+
+Terminal 1:
+```bash
+bash tools/crazyflie-simulation/simulator_files/mujoco/launch/sitl_camera.sh -s scene_obstacles.xml
+```
+
+Terminal 2:
+```bash
+python3 crazyflie-lib-python/examples/aideck/fpv.py tcp://127.0.0.1:5050
+```
+<img width="1457" height="600" alt="Screenshot from 2026-03-23 17-05-29" src="https://github.com/user-attachments/assets/b95e4f5a-3dc1-4c6c-9408-89bc4d6cdbd0" />
+
+---
+
+### Simulation Features
+
+The MuJoCo backend includes optional physics and sensor features. All features are **off by default** and enabled via flags passed to the launch scripts. Run any script with `-h` to see all options.
+
+#### Sensor Noise (`--sensor-noise`)
+
+Realistic BMI088 IMU noise model with parameters from the [datasheet](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmi088-ds001.pdf) and validated against real Crazyflie 2.1 hardware:
+- **White noise**: per-axis accelerometer (160/160/190 µg/√Hz X/Y/Z) and gyroscope (0.014 °/s/√Hz) noise density
+- **Bias**: randomized per-drone at startup within datasheet offset tolerances (accel ±20 mg, gyro ±1 °/s)
+- **Scale factor**: randomized gyro sensitivity within ±1% (datasheet tolerance)
+- **Bias random walk**: measured via Allan variance from a real Crazyflie 2.1
+
+Each drone is initialized with randomized bias and scale values, so no two simulated drones behave identically. The gyro bias is handled by the firmware's own calibration at startup, same as on real hardware.
+
+```bash
+# Single agent with sensor noise
+bash tools/crazyflie-simulation/simulator_files/mujoco/launch/sitl_singleagent.sh --sensor-noise
+```
+
+#### Ground Effect (`--ground-effect`)
+
+Models the increased thrust when a drone hovers near the ground. Uses the classical ground effect model where thrust increases as a function of height-to-rotor-radius ratio. This is noticeable when taking off or landing — the drone gets a slight boost close to the floor.
+
+```bash
+bash tools/crazyflie-simulation/simulator_files/mujoco/launch/sitl_singleagent.sh --ground-effect
+```
+
+#### Downwash (`--downwash`)
+
+Simulates the aerodynamic interaction between drones when one flies above another. The upper drone's prop wash pushes the lower drone down and can cause instability. Uses a Gaussian decay model based on lateral offset and vertical separation. Only meaningful for multi-agent scenarios.
+
+```bash
+bash tools/crazyflie-simulation/simulator_files/mujoco/launch/sitl_multiagent_square.sh -n 4 --downwash
+```
+
+#### Wind and Turbulence (`--wind-speed`, `--turbulence`)
+
+Constant wind field with optional stochastic gusts and Dryden turbulence:
+- `--wind-speed <m/s>` — constant wind speed
+- `--wind-direction <deg>` — wind direction in degrees (0=+X, 90=+Y, 180=-X, 270=-Y)
+- `--gust-intensity <m/s>` — random gust peak deviation (Ornstein-Uhlenbeck process)
+- `--turbulence <level>` — Dryden turbulence (`none`, `light`, `moderate`, `severe`)
+
+```bash
+# 2 m/s wind from +X with moderate turbulence
+bash tools/crazyflie-simulation/simulator_files/mujoco/launch/sitl_singleagent.sh \
+    --wind-speed 2 --wind-direction 0 --turbulence moderate
+```
+
+#### Flowdeck (`--flowdeck`)
+
+Simulates the Bitcraze Flow deck v2 sensors:
+- **VL53L1x TOF rangefinder** — downward-facing distance measurement using MuJoCo raycasting (`mj_ray`) at 40 Hz with the hardware-matching exponential noise model from `zranger2.c`
+- **PMW3901 optical flow** — pixel displacement computed from body-frame velocity, height, and angular rate at 100 Hz, matching the UKF's `computeOutputFlow` model (Npix=30, thetapix=4.2 deg, omegaFactor=1.25)
+
+When `--flowdeck` is enabled, external pose packets are suppressed so the estimator runs on TOF + flow only, the same as real hardware with a Flow deck. The pose code remains intact and is used when `--flowdeck` is not passed.
+
+```bash
+bash tools/crazyflie-simulation/simulator_files/mujoco/launch/sitl_singleagent.sh --flowdeck
+```
+
+#### Combining Features
+
+All flags can be combined:
+```bash
+# Single agent with all features
+bash tools/crazyflie-simulation/simulator_files/mujoco/launch/sitl_singleagent.sh \
+    --sensor-noise --ground-effect --wind-speed 1.5 --turbulence light
+
+# Multi-agent swarm with full physics
+bash tools/crazyflie-simulation/simulator_files/mujoco/launch/sitl_multiagent_square.sh -n 8 \
+    --sensor-noise --ground-effect --downwash --wind-speed 2 --turbulence moderate
+```
+
+---
+
+### PID Tuning Example
+One use case for simulating a crazyflie with the client is real time PID tuning. If you created a custom crazyflie with larger batteries, multiple decks, and upgraded motors, then it would be useful to tune the PIDs in a simulator platform before tuning live on hardware. An example of real time PID tuning is shown below.
+
+MujoCo
+
+https://github.com/user-attachments/assets/e7abb1c6-77c3-4ff5-81b7-611c88dacdda
+
+
+
+
+# Crazyswarm2
+
+This section follows the setup of Crazyswarm2 with CrazySim. We provide an example workflow of launching 4 Crazyflies using CrazySim and connect them to Crazyswarm2.
+
+1. Make sure you have ROS 2 [Humble](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debians.html).
+
+2. Build the Crazyswarm2 workspace provided as a submodule.
+```bash
+cd crazyswarm2_ws
+colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+```
+
+### Configuration
+The crazyswarm2 configuration files can be found in
+```bash
+crazyswarm2_ws/src/crazyswarm2/crazyflie/config/
+```
+The crazyflies.yaml describes the robots currently being used. If a robot is not in the simulator or hardware, then it can be disabled by setting the enabled parameter to false. A more detailed description for crazyswarm2 configurations can be found [here](https://imrclab.github.io/crazyswarm2/usage.html).
+
+For the following demo make the following adjustments to the ***robots*** and ***robot_types*** in crazyflies.yaml.
+
+```YAML
+robots:
+  cf_1:
+      enabled: true
+      uri: udp://127.0.0.1:19850
+      initial_position: [0.0, 0.0, 0.0]
+      type: cf_sim
+
+  cf_2:
+    enabled: true
+    uri: udp://127.0.0.1:19851
+    initial_position: [1.0, 0.0, 0.0]
+    type: cf_sim
+
+  cf_3:
+    enabled: true
+    uri: udp://127.0.0.1:19852
+    initial_position: [0.0, 1.0, 0.0]
+    type: cf_sim 
+
+  cf_4:
+    enabled: true
+    uri: udp://127.0.0.1:19853
+    initial_position: [1.0, 1.0, 0.0]
+    type: cf_sim
+
+robot_types:
+  cf_sim:
+    motion_capture:
+      tracking: "vendor"
+    big_quad: false
+    firmware_logging:
+      enabled: true
+      default_topics:
+        pose:
+          frequency: 10
+```
+
+### Start up the Firmware
+Start up the firmware with any of the 3 launch script options. Below we demonstrate 4 Crazyflies in a square formation.
+```bash
+bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_multiagent_square.sh -n 4 -m crazyflie
+```
+
+### Start Crazyswarm2
+Make sure that `cf_1`, `cf_2`, `cf_3`, and `cf_4` are enabled in the CrazySwarm2 configuration YAML file. Launch the Crazyswarm2 services with the CFLib backend:
+```bash
+ros2 launch crazyflie launch.py backend:=cflib
+```
+
+Or with the C++ backend:
+```bash
+ros2 launch crazyflie launch.py backend:=cpp
+```
+
+## Model Predictive Control example
+
+The model predictive control example from [1] has been moved to a separate [repository](https://github.com/llanesc/crazyflie-mpc-example).
+
+## Versions
+| Version | Description |
+| --- | --- |
+| 1.0 | Initial release |
+| 1.1 | Added receiver thread for CFLib UdpDriver, new thrust upgrade model to Gazebo, and a seperate MPC solver thread with a queue for storing the controls. |
+| 1.2 | Merge crazyflie-firmware with commits up to [dbb09b5](https://github.com/bitcraze/crazyflie-firmware/commit/dbb09b5ca16f0ddf63e98d2c44d247a3aa15f056), update submodule motion_capture_tracking to version 1.0.5, fixed Gazebo sending external pose to firmware (wasn't receiving orientation), cleaned up launch scripts, removed some firmware module copies for sitl. |
+| 1.3 | Rewritten CFLib UDP driver with threaded receiver and scan_interface for auto-discovery on ports 19850-19859, activity-based connection detection in Gazebo plugin, added SITL deck and battery parameter stubs for cfclient compatibility, updated thrust upgrade model with cf2x_T350 parameters, added Crazyswarm2 as a submodule, added UDP support for the Crazyswarm2 C++ backend, added Crazyswarm2 attitude setpoints. |
