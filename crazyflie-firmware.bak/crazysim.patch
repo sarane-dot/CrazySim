@@ -1,0 +1,4914 @@
+diff --git a/.gitignore b/.gitignore
+index 96545b06..2e46c41e 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -7,6 +7,7 @@ bin/*
+ .pydevproject
+ .settings/*
+ .vscode/*
++cache/*
+ *~
+ cflie.*
+ version.c
+@@ -39,6 +40,7 @@ docs/api/log_param_doc.json
+ docs/api
+ 
+ build/
++sitl_make/build/*
+ # To avoid that /tools/build is ignored
+ !/tools/*
+ 
+diff --git a/.gitmodules b/.gitmodules
+index d2d8aa2f..75a883fa 100644
+--- a/.gitmodules
++++ b/.gitmodules
+@@ -13,3 +13,7 @@
+ [submodule "vendor/unity"]
+ 	path = vendor/unity
+ 	url = https://github.com/throwtheswitch/unity.git
++[submodule "tools/crazyflie-simulation"]
++	path = tools/crazyflie-simulation
++	url = https://github.com/llanesc/crazyflie-simulation.git
++	branch = crazysim
+diff --git a/Kconfig b/Kconfig
+index 61444e9f..0dda5e45 100644
+--- a/Kconfig
++++ b/Kconfig
+@@ -83,6 +83,10 @@ config PLATFORM_FLAPPER
+     select SENSORS_BMI088_BMP3XX
+     select SENSORS_BMI088_SPI
+ 
++config PLATFORM_SITL
++    bool "Build for SITL"
++    select SENSORS_SITL
++
+ endchoice
+ 
+ config BOLT11_BRUSHED
+@@ -140,6 +144,12 @@ config SENSORS_BOSCH
+     bool "Include Bosch sensors"
+     default n
+ 
++config SENSORS_SITL
++bool "Support for SITL sensors"
++default n
++help
++    Include support for SITL sensors
++
+ config SENSORS_IGNORE_BAROMETER_FAIL
+     bool "Ignore failure from barometer"
+     depends on SENSORS_BMI088_BMP3XX
+@@ -198,7 +208,7 @@ config DECK_FORCE
+     default "none"
+     help
+         A colon seperated list of custom drivers to force load or "none".
+-
++        
+ source src/deck/drivers/src/Kconfig
+ 
+ endmenu
+diff --git a/build_targets.json b/build_targets.json
+index 67db9ea8..d9c1b4f1 100644
+--- a/build_targets.json
++++ b/build_targets.json
+@@ -3,6 +3,7 @@
+       "cf2",
+       "bolt",
+       "tag",
+-      "flapper"
++      "flapper",
++      "sitl"
+     ]
+   }
+diff --git a/sitl_make/CMakeLists.txt b/sitl_make/CMakeLists.txt
+new file mode 100644
+index 00000000..834317c6
+--- /dev/null
++++ b/sitl_make/CMakeLists.txt
+@@ -0,0 +1,270 @@
++# Original author: https://github.com/wuwushrek
++# Modified by: Christian Llanes (https://github.com/llanesc)
++
++cmake_minimum_required(VERSION 3.11.0 FATAL_ERROR)
++cmake_policy(SET CMP0042 NEW)
++cmake_policy(SET CMP0048 NEW)
++cmake_policy(SET CMP0054 NEW)
++
++if (NOT CMAKE_INSTALL_PREFIX)
++  set(CMAKE_INSTALL_PREFIX "/usr" CACHE STRING "install prefix" FORCE)
++endif()
++
++project(cf2_sitl VERSION 1.0.0)
++include(GNUInstallDirs)
++
++#######################
++## Find Dependencies ##
++#######################
++
++# Add search directory for CMake on OS X
++list(APPEND CMAKE_MODULE_PATH /usr/local/share/cmake/Modules)
++# list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
++
++## System dependencies are found with CMake's conventions
++find_package(PkgConfig REQUIRED)
++
++# find thread package
++find_package (Threads REQUIRED)
++
++
++set (CF2_SITL_ROOT_DIR
++  ${CMAKE_CURRENT_SOURCE_DIR}/../
++)
++
++set (CF2_SITL_SRCS_DIR
++  ${CF2_SITL_ROOT_DIR}/src
++)
++
++set(CF2_SITL_BINARY_DIR 
++  ${CMAKE_SOURCE_DIR}/build
++)
++
++set(FREERTOS_SRC_DIR 
++  ${CF2_SITL_ROOT_DIR}/vendor/FreeRTOS
++)
++
++# Code variables
++set(ESTIMATOR
++  Kalman #Kalman, Complementary, Ukf
++)
++set(CONTROLLER
++  PID #PID, Mellinger
++)
++
++#Generate version.c dependencies
++add_custom_command(OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/../version.c
++  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../
++  COMMAND python ${CMAKE_CURRENT_SOURCE_DIR}/../tools/make/versionTemplate.py ${CMAKE_CURRENT_SOURCE_DIR}/../src/utils/src/version.vtpl ${CMAKE_CURRENT_SOURCE_DIR}/../version.c
++  )
++add_custom_target(version_cf ALL DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../version.c)
++
++set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O0 -Wno-unused-variable -std=gnu11 -g3 -Wall -Wno-maybe-uninitialized -Wno-error=maybe-uninitialized -Wmissing-braces -fno-strict-aliasing -ffunction-sections -fdata-sections -Wdouble-promotion -Wno-deprecated-declarations")
++set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DESTIMATOR=StateEstimatorType${ESTIMATOR} -DCONTROLLER=ControllerType${CONTROLLER} -DCONFIG_SENSORS_SITL -DSENSORS_FORCE=SensorImplementation_sitl")
++
++#set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} --specs=nano.specs -T ${CF2_SITL_SRCS_DIR}/../tools/make/F405/linker/FLASH.ld")
++# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wno-deprecated-declarations")
++set(CMAKE_BUILD_TYPE Release)
++
++set(${PROJECT_NAME}_INCLUDE_DIRS
++    ${PROJECT_SOURCE_DIR}/include
++    CACHE INTERNAL "${PROJECT_NAME}: Include Directories" FORCE)
++
++set(FREERTOS_SRCS
++   ${FREERTOS_SRC_DIR}/event_groups.c
++   ${FREERTOS_SRC_DIR}/list.c
++   ${FREERTOS_SRC_DIR}/queue.c
++   ${FREERTOS_SRC_DIR}/tasks.c
++   ${FREERTOS_SRC_DIR}/timers.c
++   ${FREERTOS_SRC_DIR}/croutine.c
++   ${FREERTOS_SRC_DIR}/portable/ThirdParty/GCC/Posix/port.c
++   ${FREERTOS_SRC_DIR}/portable/ThirdParty/GCC/Posix/utils/wait_for_event.c
++   ${FREERTOS_SRC_DIR}/portable/MemMang/heap_3.c
++)
++
++set (CF2_SITL_INCLUDE_DIRS
++  ${FREERTOS_SRC_DIR}/include
++  ${FREERTOS_SRC_DIR}/portable/ThirdParty/GCC/Posix
++  ${FREERTOS_SRC_DIR}/portable/ThirdParty/GCC/Posix/utils
++  ${CF2_SITL_SRCS_DIR}/config
++  ${CF2_SITL_SRCS_DIR}/drivers/interface
++  #${CF2_SITL_SRCS_DIR}/deck/interface
++  #${CF2_SITL_SRCS_DIR}/deck/drivers/interface
++  ${CF2_SITL_SRCS_DIR}/hal/interface
++  ${CF2_SITL_SRCS_DIR}/platform
++  ${CF2_SITL_SRCS_DIR}/utils/interface
++  ${CF2_SITL_SRCS_DIR}/utils/interface/lighthouse
++  ${CF2_SITL_SRCS_DIR}/utils/interface/kve
++  ${CF2_SITL_SRCS_DIR}/platform/interface
++  ${CF2_SITL_SRCS_DIR}/modules/interface
++  ${CF2_SITL_SRCS_DIR}/modules/interface/controller
++  ${CF2_SITL_SRCS_DIR}/modules/interface/estimator
++  ${CF2_SITL_SRCS_DIR}/modules/interface/kalman_core
++  ${CF2_SITL_SRCS_DIR}/modules/interface/outlierfilter
++
++  #Verification
++  ${INCL_VERIF}
++  #${CMAKE_CURRENT_SOURCE_DIR}/include
++)
++
++include_directories(${CF2_SITL_INCLUDE_DIRS})
++
++set(SRCS
++  # main
++  ${CF2_SITL_SRCS_DIR}/init/main_sitl.c
++
++  #Hal
++  ${CF2_SITL_SRCS_DIR}/hal/src/usec_time_sitl.c
++  ${CF2_SITL_SRCS_DIR}/hal/src/buzzer.c
++  ${CF2_SITL_SRCS_DIR}/hal/src/storage.c
++  ${CF2_SITL_SRCS_DIR}/hal/src/pm_sitl.c
++  ${CF2_SITL_SRCS_DIR}/hal/src/radiolink_sitl.c
++
++  # ${CF2_SITL_SRCS_DIR}/deck/core/deck_drivers.c
++  # ${CF2_SITL_SRCS_DIR}/deck/core/deck_info.c
++  # ${CF2_SITL_SRCS_DIR}/deck/core/deck_memory.c
++  # ${CF2_SITL_SRCS_DIR}/deck/core/deck_test.c
++  # ${CF2_SITL_SRCS_DIR}/deck/core/deck.c
++
++  # SITL deck stub (exposes deck parameters for cfclient)
++  ${CF2_SITL_SRCS_DIR}/deck/drivers/src/deck_sitl.c
++
++  #LED SITL stubs
++  ${CF2_SITL_SRCS_DIR}/drivers/src/led_sitl.c
++  ${CF2_SITL_SRCS_DIR}/hal/src/ledseq.c
++  ${CF2_SITL_SRCS_DIR}/deck/drivers/src/colorled_sitl.c
++
++  #Communication
++  ${CF2_SITL_SRCS_DIR}/hal/src/socketlink.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/crtp.c
++
++  #sensors
++  ${CF2_SITL_SRCS_DIR}/hal/src/sensors_sitl.c
++  ${CF2_SITL_SRCS_DIR}/hal/src/sensors.c
++
++  #Range
++  ${CF2_SITL_SRCS_DIR}/modules/src/range.c
++
++  #Modules
++  ${CF2_SITL_SRCS_DIR}/modules/src/system.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/comm.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/console.c
++  ${CF2_SITL_SRCS_DIR}/utils/src/pid.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/crtpservice.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/param_task.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/param_logic.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/log.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/worker.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/queuemonitor.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/msp.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/platformservice.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/sysload.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/crtp_mem.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/mem.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/static_mem.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/pptraj_compressed.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/pptraj.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/supervisor.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/supervisor_state_machine.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/app_channel.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/peer_localization.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/axis3fSubSampler.c
++  #stabilizer modules
++  ${CF2_SITL_SRCS_DIR}/modules/src/commander.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/crtp_commander.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/crtp_commander_rpyt.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/crtp_commander_generic.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/crtp_localization_service.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/sensfusion6.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/stabilizer.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/eventtrigger.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/estimator/position_estimator_altitude.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/estimator/estimator.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/estimator/estimator_complementary.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/estimator/estimator_kalman.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/kalman_core/kalman_core.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/kalman_core/mm_absolute_height.c
++  # ${CF2_SITL_SRCS_DIR}/modules/src/kalman_core/mm_distance_robust.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/kalman_core/mm_distance.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/kalman_core/mm_flow.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/kalman_core/mm_pose.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/kalman_core/mm_position.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/kalman_core/mm_sweep_angles.c
++  # ${CF2_SITL_SRCS_DIR}/modules/src/kalman_core/mm_tdoa_robust.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/kalman_core/mm_tdoa.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/kalman_core/mm_tof.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/kalman_core/mm_yaw_error.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/kalman_supervisor.c
++
++  ${CF2_SITL_SRCS_DIR}/modules/src/estimator/estimator_ukf.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/outlierfilter/outlierFilterTdoa.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/outlierfilter/outlierFilterTdoaSteps.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/outlierfilter/outlierFilterLighthouse.c
++
++  #Controller and power distribution
++  ${CF2_SITL_SRCS_DIR}/modules/src/controller/attitude_pid_controller.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/controller/position_controller_pid.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/controller/controller.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/controller/controller_pid.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/controller/controller_mellinger.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/controller/controller_indi.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/controller/position_controller_indi.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/controller/controller_brescianini.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/power_distribution_sitl.c
++
++  #High level commander
++  ${CF2_SITL_SRCS_DIR}/modules/src/crtp_commander_high_level.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/planner.c
++  ${CF2_SITL_SRCS_DIR}/modules/src/pptraj.c
++
++  #Platform
++  ${CF2_SITL_SRCS_DIR}/platform/src/platform.c
++  ${CF2_SITL_SRCS_DIR}/platform/src/platform_sitl.c
++
++  #Utilities
++  ${CF2_SITL_SRCS_DIR}/utils/src/filter.c
++  ${CF2_SITL_SRCS_DIR}/utils/src/eprintf.c
++  ${CF2_SITL_SRCS_DIR}/utils/src/crc32.c
++  ${CF2_SITL_SRCS_DIR}/utils/src/num.c
++  ${CF2_SITL_SRCS_DIR}/utils/src/debug.c
++  ${CF2_SITL_SRCS_DIR}/utils/src/configblocksitl.c
++  ${CF2_SITL_SRCS_DIR}/utils/src/cfassert.c
++  ${CF2_SITL_SRCS_DIR}/utils/src/rateSupervisor.c
++  ${CF2_SITL_SRCS_DIR}/utils/src/statsCnt.c
++  ${CF2_SITL_SRCS_DIR}/utils/src/kve/kve.c
++  ${CF2_SITL_SRCS_DIR}/utils/src/kve/kve_storage.c
++
++  ${CF2_SITL_SRCS_DIR}/../version.c
++  ${FREERTOS_SRCS}
++
++  #Verification include
++  ${SRC_VERIF}
++)
++
++# Create an executable
++add_executable(cf2 ${SRCS})
++
++target_link_libraries(cf2 ${CMAKE_THREAD_LIBS_INIT} m)
++
++target_compile_options(cf2 PUBLIC -DCONFIG_DECK_FORCE -DCONFIG_ESTIMATOR_KALMAN_ENABLE -DCONFIG_ESTIMATOR_UKF_ENABLE -DCRAZYFLIE_FW -DCONFIG_PLATFORM_SITL -DARCH_64)
++target_compile_definitions(cf2 PUBLIC CONFIG_PLATFORM_SITL)
++
++# Check if linker supports --no-warn-rwx-segments (added in binutils 2.39)
++execute_process(
++  COMMAND ${CMAKE_LINKER} --help
++  OUTPUT_VARIABLE LINKER_HELP_OUTPUT
++  ERROR_QUIET
++)
++string(FIND "${LINKER_HELP_OUTPUT}" "--no-warn-rwx-segments" LINKER_SUPPORTS_NO_WARN_RWX)
++
++if(LINKER_SUPPORTS_NO_WARN_RWX GREATER -1)
++  set(NO_WARN_RWX_FLAG ",--no-warn-rwx-segments")
++else()
++  set(NO_WARN_RWX_FLAG "")
++endif()
++
++set_target_properties(
++  cf2 PROPERTIES LINK_FLAGS "-Wl,--gc-sections${NO_WARN_RWX_FLAG},-T${CMAKE_CURRENT_SOURCE_DIR}/log_param_linker.ld"
++)
++
++include(cmake/sitl_gazebo.cmake)
+\ No newline at end of file
+diff --git a/sitl_make/cmake/sitl_gazebo.cmake b/sitl_make/cmake/sitl_gazebo.cmake
+new file mode 100644
+index 00000000..1c966e2f
+--- /dev/null
++++ b/sitl_make/cmake/sitl_gazebo.cmake
+@@ -0,0 +1,13 @@
++include(ExternalProject)
++ExternalProject_Add(crazysim_gz
++  SOURCE_DIR ${CF2_SITL_ROOT_DIR}/tools/crazyflie-simulation/simulator_files/gazebo/plugins/CrazySim
++  CMAKE_ARGS
++    -DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
++  BINARY_DIR ${CF2_SITL_BINARY_DIR}/build_crazysim_gz
++  INSTALL_COMMAND ""
++  USES_TERMINAL_CONFIGURE true
++  USES_TERMINAL_BUILD true
++  EXCLUDE_FROM_ALL false
++  BUILD_ALWAYS 1
++  BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> -j ${parallel_jobs}
++)
+\ No newline at end of file
+diff --git a/sitl_make/log_param_linker.ld b/sitl_make/log_param_linker.ld
+new file mode 100644
+index 00000000..cb47251b
+--- /dev/null
++++ b/sitl_make/log_param_linker.ld
+@@ -0,0 +1,30 @@
++SECTIONS
++{
++	.param : {
++        PROVIDE(_stext = .);
++        PROVIDE(_param_start = .);
++        KEEP(*(.param))
++        KEEP(*(.param.*))
++        PROVIDE(_param_stop = .);
++        PROVIDE(_etext = .);
++    }
++    .log : {
++        PROVIDE(_log_start = .);
++        KEEP(*(.log))
++        KEEP(*(.log.*))
++        PROVIDE(_log_stop = .);
++    }
++    .eventtrigger : {
++        PROVIDE(_eventtrigger_start = .);
++        KEEP(*(.eventtrigger));
++        KEEP(*(.eventtrigger.*));
++        PROVIDE(_eventtrigger_stop = .);
++    }
++    .data : {
++        PROVIDE(_sidata = .);
++        PROVIDE(_sdata = .);
++        PROVIDE(_edata = .);
++    }
++     
++}
++INSERT AFTER .text;
+\ No newline at end of file
+diff --git a/src/config/FreeRTOSConfig.h b/src/config/FreeRTOSConfig.h
+index 8a32fd2a..e4c52d16 100644
+--- a/src/config/FreeRTOSConfig.h
++++ b/src/config/FreeRTOSConfig.h
+@@ -71,7 +71,11 @@
+  *----------------------------------------------------------*/
+ 
+ #define configUSE_PREEMPTION		1
++#ifndef CONFIG_PLATFORM_SITL
+ #define configUSE_IDLE_HOOK			1
++#else
++#define configUSE_IDLE_HOOK     0
++#endif   
+ #define configUSE_TICK_HOOK			0
+ #define configCPU_CLOCK_HZ			( ( unsigned long ) FREERTOS_MCU_CLOCK_HZ )
+ #define configTICK_RATE_HZ_RAW  1000
+@@ -82,7 +86,11 @@
+ #define configUSE_16_BIT_TICKS		0
+ #define configIDLE_SHOULD_YIELD		0
+ #define configUSE_CO_ROUTINES 		0
++#ifdef DEBUG
+ #define configCHECK_FOR_STACK_OVERFLOW      1
++#else
++#define configCHECK_FOR_STACK_OVERFLOW      0
++#endif
+ #define configUSE_TASK_NOTIFICATIONS 1
+ #define configUSE_TIMERS          1
+ #define configTIMER_TASK_PRIORITY 1
+@@ -146,7 +154,20 @@ to exclude the API function. */
+ #define TASK_PM_ID_NBR          5
+ #define TASK_PROXIMITY_ID_NBR   6
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #define configASSERT( x )  if( ( x ) == 0 ) assertFail(#x, __FILE__, __LINE__ )
++#else
++#define configUSE_TRACE_FACILITY    1
++#define configASSERT( x ) if( ( x ) == 0 ) vAssertCalled( __LINE__, __FILE__ )
++/* Include the FreeRTOS+Trace FreeRTOS trace macro definitions. */
++#define TRACE_ENTER_CRITICAL_SECTION() portENTER_CRITICAL()
++#define TRACE_EXIT_CRITICAL_SECTION() portEXIT_CRITICAL()
++/*Need to explicitely redefine vAssertCalled*/
++extern void vAssertCalled( unsigned long ulLine, const char * const pcFileName );
++/* Hack for undefined vApplicationMallocFailedHook */
++extern void vApplicationMallocFailedHook(void);
++/*#include "trcKernelPort.h" */
++#endif
+ 
+ /*
+ #define traceTASK_SWITCHED_IN() \
+diff --git a/src/config/config.h b/src/config/config.h
+index 69882678..4f5f6110 100644
+--- a/src/config/config.h
++++ b/src/config/config.h
+@@ -41,11 +41,14 @@
+ 
+ #ifndef CONFIG_H_
+ #define CONFIG_H_
++#ifndef CONFIG_PLATFORM_SITL
+ #include "nrf24l01.h"
+ 
+ #include "trace.h"
++#endif
+ #include "usec_time.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #define CONFIG_BLOCK_ADDRESS    (2048 * (64-1))
+ #define MCU_ID_ADDRESS          0x1FFF7A10
+ #define MCU_FLASH_SIZE_ADDRESS  0x1FFF7A22
+@@ -58,6 +61,18 @@
+ #define configGENERATE_RUN_TIME_STATS 1
+ #define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS() usecTimerInit()
+ #define portGET_RUN_TIME_COUNTER_VALUE() usecTimestamp()
++#else
++#define CONFIG_BLOCK_ADDRESS      (2048 * (64-1))
++#define MCU_ID_ADDRESS          0x1FFF7A10
++#define MCU_FLASH_SIZE_ADDRESS  0x1FFF7A22
++#define FREERTOS_HEAP_SIZE        40000
++#define FREERTOS_MIN_STACK_SIZE   150
++#define FREERTOS_MCU_CLOCK_HZ     168000000
++
++#define configGENERATE_RUN_TIME_STATS 1
++#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS()    /* no-op */
++#define portGET_RUN_TIME_COUNTER_VALUE()            ulPortGetRunTime()
++#endif
+ 
+ 
+ // Task priorities. Higher number higher priority
+diff --git a/src/deck/api/deck_spi3.c b/src/deck/api/deck_spi3.c
+index 5ccdea7e..8857f698 100644
+--- a/src/deck/api/deck_spi3.c
++++ b/src/deck/api/deck_spi3.c
+@@ -34,7 +34,9 @@
+ #include "FreeRTOS.h"
+ #include "semphr.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ #include "cfassert.h"
+ #include "config.h"
+ #include "nvicconf.h"
+diff --git a/src/deck/core/deck_info.c b/src/deck/core/deck_info.c
+index e848b927..30959a7b 100644
+--- a/src/deck/core/deck_info.c
++++ b/src/deck/core/deck_info.c
+@@ -37,7 +37,9 @@
+ #include "debug.h"
+ #include "static_mem.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #ifdef CONFIG_DEBUG
+   #define DECK_INFO_DBG_PRINT(fmt, ...)  DEBUG_PRINT(fmt, ## __VA_ARGS__)
+diff --git a/src/deck/drivers/interface/lpsTdma.h b/src/deck/drivers/interface/lpsTdma.h
+index 4cb2824e..8366a6c9 100644
+--- a/src/deck/drivers/interface/lpsTdma.h
++++ b/src/deck/drivers/interface/lpsTdma.h
+@@ -32,7 +32,9 @@
+ #ifndef __LPS_TDMA_H__
+ #define __LPS_TDMA_H__
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #ifndef CONFIG_DECK_LOCO_TDMA_SLOTS
+ #ifdef CONFIG_DECK_LOCO_TDMA
+diff --git a/src/deck/drivers/interface/lpsTdoa2Tag.h b/src/deck/drivers/interface/lpsTdoa2Tag.h
+index 5c8d78d7..32a17929 100644
+--- a/src/deck/drivers/interface/lpsTdoa2Tag.h
++++ b/src/deck/drivers/interface/lpsTdoa2Tag.h
+@@ -6,7 +6,9 @@
+ 
+ #include "mac.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ extern uwbAlgorithm_t uwbTdoa2TagAlgorithm;
+ 
+diff --git a/src/deck/drivers/src/bigquad.c b/src/deck/drivers/src/bigquad.c
+index 00bcd20f..3190204c 100644
+--- a/src/deck/drivers/src/bigquad.c
++++ b/src/deck/drivers/src/bigquad.c
+@@ -29,7 +29,9 @@
+ #include <string.h>
+ 
+ #include "stm32fxxx.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ #include "config.h"
+ #include "motors.h"
+ #include "debug.h"
+diff --git a/src/deck/drivers/src/colorled_sitl.c b/src/deck/drivers/src/colorled_sitl.c
+new file mode 100644
+index 00000000..3bd833f1
+--- /dev/null
++++ b/src/deck/drivers/src/colorled_sitl.c
+@@ -0,0 +1,165 @@
++/**
++ *    ||          ____  _ __
++ * +------+      / __ )(_) /_______________ _____  ___
++ * | 0xBC |     / __  / / __/ ___/ ___/ __ `/_  / / _ \
++ * +------+    / /_/ / / /_/ /__/ /  / /_/ / / /_/  __/
++ *  ||  ||    /_____/_/\__/\___/_/   \__,_/ /___/\___/
++ *
++ * Crazyflie control firmware
++ *
++ * Copyright (C) 2026 Bitcraze AB
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, in version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ *
++ * colorled_sitl.c - SITL stub for the Color LED deck and LED ring params.
++ * Exposes colorLedBot/Top parameters so cfclient's Color LED tab works,
++ * and ring.* parameters for script compatibility.
++ * Sends RGB color to the simulator via CRTP for MuJoCo visualization.
++ */
++
++#include <stdint.h>
++#include "param.h"
++#include "log.h"
++#include "crtp.h"
++
++/* LED color CRTP packet: SIM port, channel 1.
++ * Byte 0: header (0x91)
++ * Byte 1: position (0=bot, 1=top)
++ * Byte 2: R
++ * Byte 3: G
++ * Byte 4: B
++ */
++#define CRTP_HDR_LED CRTP_HEADER(CRTP_PORT_SETPOINT_SIM, 1)
++
++/* Headlight CRTP packet: SIM port, channel 2. */
++#define CRTP_HDR_HEADLIGHT CRTP_HEADER(CRTP_PORT_SETPOINT_SIM, 2)
++
++#define LED_POS_BOT 0
++#define LED_POS_TOP 1
++
++static void sendColorToSim(uint8_t position, uint32_t wrgb)
++{
++  uint8_t w = (wrgb >> 24) & 0xFF;
++  uint8_t r = (wrgb >> 16) & 0xFF;
++  uint8_t g = (wrgb >> 8)  & 0xFF;
++  uint8_t b =  wrgb        & 0xFF;
++
++  /* Add white channel back to get full RGB */
++  uint16_t rFull = r + w;
++  uint16_t gFull = g + w;
++  uint16_t bFull = b + w;
++  if (rFull > 255) rFull = 255;
++  if (gFull > 255) gFull = 255;
++  if (bFull > 255) bFull = 255;
++
++  CRTPPacket p;
++  p.header = CRTP_HDR_LED;
++  p.size = 4;
++  p.data[0] = position;
++  p.data[1] = (uint8_t)rFull;
++  p.data[2] = (uint8_t)gFull;
++  p.data[3] = (uint8_t)bFull;
++  crtpSendPacket(&p);
++}
++
++/* ---- Color LED deck (bottom) ---- */
++
++static uint32_t wrgb8888Bot = 0;
++static uint8_t brightCorrBot = 100;
++static uint8_t throttlePctBot = 0;
++
++static void colorBotCallback(void)
++{
++  sendColorToSim(LED_POS_BOT, wrgb8888Bot);
++}
++
++PARAM_GROUP_START(colorLedBot)
++PARAM_ADD_WITH_CALLBACK(PARAM_UINT32, wrgb8888, &wrgb8888Bot, &colorBotCallback)
++PARAM_ADD_CORE(PARAM_UINT8, brightCorr, &brightCorrBot)
++PARAM_GROUP_STOP(colorLedBot)
++
++LOG_GROUP_START(colorLedBot)
++LOG_ADD(LOG_UINT8, throttlePct, &throttlePctBot)
++LOG_GROUP_STOP(colorLedBot)
++
++/* ---- Color LED deck (top) ---- */
++
++static uint32_t wrgb8888Top = 0;
++static uint8_t brightCorrTop = 100;
++static uint8_t throttlePctTop = 0;
++
++static void colorTopCallback(void)
++{
++  sendColorToSim(LED_POS_TOP, wrgb8888Top);
++}
++
++PARAM_GROUP_START(colorLedTop)
++PARAM_ADD_WITH_CALLBACK(PARAM_UINT32, wrgb8888, &wrgb8888Top, &colorTopCallback)
++PARAM_ADD_CORE(PARAM_UINT8, brightCorr, &brightCorrTop)
++PARAM_GROUP_STOP(colorLedTop)
++
++LOG_GROUP_START(colorLedTop)
++LOG_ADD(LOG_UINT8, throttlePct, &throttlePctTop)
++LOG_GROUP_STOP(colorLedTop)
++
++/* ---- LED ring params (for script compatibility) ---- */
++
++static uint8_t effect = 7;
++static uint32_t neffect = 19;
++static uint8_t solidRed = 0;
++static uint8_t solidGreen = 0;
++static uint8_t solidBlue = 0;
++static uint8_t headlightEnable = 0;
++static float emptyCharge = 3.1f;
++static float fullCharge = 4.2f;
++static uint32_t fadeColor = 0;
++static float fadeTime = 0.0f;
++
++static void ledColorParamCallback(void)
++{
++  /* Ring params set both top and bottom */
++  uint32_t wrgb = ((uint32_t)solidRed << 16) |
++                  ((uint32_t)solidGreen << 8) |
++                  (uint32_t)solidBlue;
++  sendColorToSim(LED_POS_BOT, wrgb);
++  sendColorToSim(LED_POS_TOP, wrgb);
++}
++
++static void headlightParamCallback(void)
++{
++  CRTPPacket p;
++  p.header = CRTP_HDR_HEADLIGHT;
++  p.size = 1;
++  p.data[0] = headlightEnable;
++  crtpSendPacket(&p);
++}
++
++PARAM_GROUP_START(ring)
++PARAM_ADD_CORE(PARAM_UINT8 | PARAM_PERSISTENT, effect, &effect)
++PARAM_ADD_CORE(PARAM_UINT32 | PARAM_RONLY, neffect, &neffect)
++PARAM_ADD_WITH_CALLBACK(PARAM_UINT8, solidRed, &solidRed, &ledColorParamCallback)
++PARAM_ADD_WITH_CALLBACK(PARAM_UINT8, solidGreen, &solidGreen, &ledColorParamCallback)
++PARAM_ADD_WITH_CALLBACK(PARAM_UINT8, solidBlue, &solidBlue, &ledColorParamCallback)
++PARAM_ADD_WITH_CALLBACK(PARAM_UINT8, headlightEnable, &headlightEnable, &headlightParamCallback)
++PARAM_ADD_CORE(PARAM_FLOAT, emptyCharge, &emptyCharge)
++PARAM_ADD_CORE(PARAM_FLOAT, fullCharge, &fullCharge)
++PARAM_ADD_CORE(PARAM_UINT32, fadeColor, &fadeColor)
++PARAM_ADD_CORE(PARAM_FLOAT, fadeTime, &fadeTime)
++PARAM_GROUP_STOP(ring)
++
++LOG_GROUP_START(ring)
++LOG_ADD(LOG_UINT8, solidRed, &solidRed)
++LOG_ADD(LOG_UINT8, solidGreen, &solidGreen)
++LOG_ADD(LOG_UINT8, solidBlue, &solidBlue)
++LOG_ADD(LOG_UINT8, effect, &effect)
++LOG_GROUP_STOP(ring)
+diff --git a/src/deck/drivers/src/deck_sitl.c b/src/deck/drivers/src/deck_sitl.c
+new file mode 100644
+index 00000000..b08664ac
+--- /dev/null
++++ b/src/deck/drivers/src/deck_sitl.c
+@@ -0,0 +1,28 @@
++#include <stdint.h>
++#include "param.h"
++
++static uint8_t bcFlow = 0;
++static uint8_t bcFlow2 = 1;
++static uint8_t bcLighthouse4 = 0;
++static uint8_t bcLoco = 0;
++static uint8_t bcDWM1000 = 0;
++static uint8_t bcZRanger = 0;
++static uint8_t bcZRanger2 = 0;
++static uint8_t bcLedRing = 0;
++static uint8_t bcMultiranger = 1;
++static uint8_t bcColorLedBot = 1;
++static uint8_t bcColorLedTop = 1;
++
++PARAM_GROUP_START(deck)
++PARAM_ADD_CORE(PARAM_UINT8 | PARAM_RONLY, bcFlow, &bcFlow)
++PARAM_ADD_CORE(PARAM_UINT8 | PARAM_RONLY, bcFlow2, &bcFlow2)
++PARAM_ADD_CORE(PARAM_UINT8 | PARAM_RONLY, bcLighthouse4, &bcLighthouse4)
++PARAM_ADD_CORE(PARAM_UINT8 | PARAM_RONLY, bcLoco, &bcLoco)
++PARAM_ADD_CORE(PARAM_UINT8 | PARAM_RONLY, bcDWM1000, &bcDWM1000)
++PARAM_ADD_CORE(PARAM_UINT8 | PARAM_RONLY, bcZRanger, &bcZRanger)
++PARAM_ADD_CORE(PARAM_UINT8 | PARAM_RONLY, bcZRanger2, &bcZRanger2)
++PARAM_ADD_CORE(PARAM_UINT8 | PARAM_RONLY, bcLedRing, &bcLedRing)
++PARAM_ADD_CORE(PARAM_UINT8 | PARAM_RONLY, bcMultiranger, &bcMultiranger)
++PARAM_ADD_CORE(PARAM_UINT8 | PARAM_RONLY, bcColorLedBot, &bcColorLedBot)
++PARAM_ADD_CORE(PARAM_UINT8 | PARAM_RONLY, bcColorLedTop, &bcColorLedTop)
++PARAM_GROUP_STOP(deck)
+diff --git a/src/deck/drivers/src/flapperdeck.c b/src/deck/drivers/src/flapperdeck.c
+index ba3d627e..533308b9 100644
+--- a/src/deck/drivers/src/flapperdeck.c
++++ b/src/deck/drivers/src/flapperdeck.c
+@@ -37,7 +37,9 @@
+ #include "extrx.h"
+ #include "flapperdeck.h"
+ #include "pm.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ #include "config.h"
+ 
+ static float reading_last = 0.0;
+diff --git a/src/deck/drivers/src/ledring12.c b/src/deck/drivers/src/ledring12.c
+index f9405d19..9ac16cc8 100644
+--- a/src/deck/drivers/src/ledring12.c
++++ b/src/deck/drivers/src/ledring12.c
+@@ -30,7 +30,9 @@
+ 
+ #include "stm32fxxx.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ #include "deck.h"
+ 
+ #include "FreeRTOS.h"
+diff --git a/src/deck/drivers/src/locodeck.c b/src/deck/drivers/src/locodeck.c
+index c7aab602..9cceba13 100644
+--- a/src/deck/drivers/src/locodeck.c
++++ b/src/deck/drivers/src/locodeck.c
+@@ -41,7 +41,9 @@
+ #include "task.h"
+ #include "queue.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ #include "deck.h"
+ #include "system.h"
+ #include "debug.h"
+diff --git a/src/deck/drivers/src/lpsTdoa2Tag.c b/src/deck/drivers/src/lpsTdoa2Tag.c
+index 8f739413..a5c0ae19 100644
+--- a/src/deck/drivers/src/lpsTdoa2Tag.c
++++ b/src/deck/drivers/src/lpsTdoa2Tag.c
+@@ -28,7 +28,9 @@
+ #include "FreeRTOS.h"
+ #include "task.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ #include "log.h"
+ #include "param.h"
+ #include "lpsTdoa2Tag.h"
+diff --git a/src/deck/drivers/src/usddeck.c b/src/deck/drivers/src/usddeck.c
+index 8427843a..b35bd836 100644
+--- a/src/deck/drivers/src/usddeck.c
++++ b/src/deck/drivers/src/usddeck.c
+@@ -63,7 +63,9 @@
+ #include "mem.h"
+ #include "eventtrigger.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ // Hardware defines
+ #ifdef CONFIG_DECK_USD_USE_ALT_PINS_AND_SPI
+diff --git a/src/deck/interface/deck.h b/src/deck/interface/deck.h
+index 3de5d656..35ff8cc8 100644
+--- a/src/deck/interface/deck.h
++++ b/src/deck/interface/deck.h
+@@ -6,10 +6,12 @@
+ /* Core: handles initialisation, discovery and drivers */
+ #include "deck_core.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ /* Deck APIs */
+ #include "deck_constants.h"
+ #include "deck_digital.h"
+ #include "deck_analog.h"
+ #include "deck_spi.h"
++#endif
+ 
+ #endif
+diff --git a/src/drivers/interface/led.h b/src/drivers/interface/led.h
+index 1adce1fa..34e3eb65 100644
+--- a/src/drivers/interface/led.h
++++ b/src/drivers/interface/led.h
+@@ -32,6 +32,7 @@
+ #define LED_POL_POS 0
+ #define LED_POL_NEG 1
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ //Hardware configuration
+ #define LED_GPIO_PERIF   (RCC_AHB1Periph_GPIOC | RCC_AHB1Periph_GPIOD)
+ #define LED_GPIO_PORT_BLUE  GPIOD
+@@ -46,6 +47,7 @@
+ #define LED_POL_GREEN_R  LED_POL_NEG
+ #define LED_GPIO_RED_R   GPIO_Pin_3
+ #define LED_POL_RED_R    LED_POL_NEG
++#endif
+ 
+ #define LINK_LED         LED_GREEN_L
+ #define CHG_LED          LED_BLUE_L
+diff --git a/src/drivers/interface/motors.h b/src/drivers/interface/motors.h
+index e480123d..0741d173 100644
+--- a/src/drivers/interface/motors.h
++++ b/src/drivers/interface/motors.h
+@@ -36,7 +36,9 @@
+ #include <stdint.h>
+ #include <stdbool.h>
+ #include "config.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ /* ST includes */
+ #include "stm32fxxx.h"
+ 
+diff --git a/src/drivers/interface/uart2.h b/src/drivers/interface/uart2.h
+index 3d998a6d..06bbb1ad 100644
+--- a/src/drivers/interface/uart2.h
++++ b/src/drivers/interface/uart2.h
+@@ -27,7 +27,9 @@
+ 
+ #include <stdbool.h>
+ #include "eprintf.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #define UART2_DATA_TIMEOUT_MS    1000
+ #define UART2_DATA_TIMEOUT_TICKS (UART2_DATA_TIMEOUT_MS / portTICK_RATE_MS)
+diff --git a/src/drivers/src/i2c_drv.c b/src/drivers/src/i2c_drv.c
+index 6eab7ec2..c8c318d5 100644
+--- a/src/drivers/src/i2c_drv.c
++++ b/src/drivers/src/i2c_drv.c
+@@ -49,7 +49,9 @@
+ #include "nvicconf.h"
+ #include "sleepus.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ //DEBUG
+ #ifdef I2CDRV_DEBUG_LOG_EVENTS
+diff --git a/src/drivers/src/led_sitl.c b/src/drivers/src/led_sitl.c
+new file mode 100644
+index 00000000..c42b8cc1
+--- /dev/null
++++ b/src/drivers/src/led_sitl.c
+@@ -0,0 +1,144 @@
++/**
++ *    ||          ____  _ __
++ * +------+      / __ )(_) /_______________ _____  ___
++ * | 0xBC |     / __  / / __/ ___/ ___/ __ `/_  / / _ \
++ * +------+    / /_/ / / /_/ /__/ /  / /_/ / / /_/  __/
++ *  ||  ||    /_____/_/\__/\___/_/   \__,_/ /___/\___/
++ *
++ * Crazyflie control firmware
++ *
++ * Copyright (C) 2011-2012 Bitcraze AB
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, in version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ *
++ * led_sitl.c - SITL stub for LED handling functions.
++ * Stores LED state in memory and exposes it via LOG variables
++ * so simulators can read and visualize the LED states.
++ */
++#include <stdbool.h>
++
++#include "led.h"
++#include "param.h"
++#include "log.h"
++
++#define LED_ENABLE_BITMASK_BIT    7
++
++static bool isInit = false;
++static uint8_t ledControlBitmask;
++static uint8_t ledState[LED_NUM];
++ledSwitch_t ledSwitchState;
++
++static void ledSetSwitch(ledSwitch_t ledSwitch)
++{
++  if (ledSwitchState != ledSwitch)
++  {
++    ledSwitchState = ledSwitch;
++  }
++}
++
++static void ledBitmaskParamCallback(void)
++{
++  if (ledControlBitmask & (1 << LED_ENABLE_BITMASK_BIT))
++  {
++    ledSetSwitch(LED_PARAM_BITMASK);
++    for (int i = 0; i < LED_NUM; i++)
++    {
++      ledState[i] = (ledControlBitmask & (1 << i)) ? 1 : 0;
++    }
++  }
++  else
++  {
++    ledSetSwitch(LED_LEDSEQ);
++  }
++}
++
++void ledInit()
++{
++  if (isInit)
++    return;
++
++  for (int i = 0; i < LED_NUM; i++)
++  {
++    ledState[i] = 0;
++  }
++
++  ledSwitchState = LED_LEDSEQ;
++  isInit = true;
++}
++
++bool ledTest(void)
++{
++  return isInit;
++}
++
++void ledClearAll(void)
++{
++  for (int i = 0; i < LED_NUM; i++)
++  {
++    ledState[i] = 0;
++  }
++}
++
++void ledSetAll(void)
++{
++  for (int i = 0; i < LED_NUM; i++)
++  {
++    ledState[i] = 1;
++  }
++}
++
++void ledSet(led_t led, bool value)
++{
++  if (led >= LED_NUM)
++  {
++    return;
++  }
++
++  ledState[led] = value ? 1 : 0;
++}
++
++void ledShowFaultPattern(void)
++{
++  ledSet(LED_GREEN_L, 0);
++  ledSet(LED_GREEN_R, 0);
++  ledSet(LED_RED_L, 1);
++  ledSet(LED_RED_R, 1);
++  ledSet(LED_BLUE_L, 0);
++}
++
++/**
++ * Parameters governing the onboard LEDs
++ * */
++PARAM_GROUP_START(led)
++/**
++ * @brief Control onboard LEDs using a bitmask. Enabling it will override the led sequencer.
++ *
++ * ```
++ * | 7:ENABLE | 6:N/A | 5:BLUE_R | 4:RED_R | 3:GREEN_R | 2:RED_L | 1:GREEN_L | 0:BLUE_L |
++ * ```
++ */
++PARAM_ADD_WITH_CALLBACK(PARAM_UINT8, bitmask, &ledControlBitmask, &ledBitmaskParamCallback)
++
++PARAM_GROUP_STOP(led)
++
++/**
++ * LED state log variables for SITL visualization.
++ * Each variable is 1 (on) or 0 (off).
++ */
++LOG_GROUP_START(led)
++LOG_ADD(LOG_UINT8, blueL, &ledState[LED_BLUE_L])
++LOG_ADD(LOG_UINT8, greenL, &ledState[LED_GREEN_L])
++LOG_ADD(LOG_UINT8, redL, &ledState[LED_RED_L])
++LOG_ADD(LOG_UINT8, greenR, &ledState[LED_GREEN_R])
++LOG_ADD(LOG_UINT8, redR, &ledState[LED_RED_R])
++LOG_GROUP_STOP(led)
+diff --git a/src/drivers/src/uart2.c b/src/drivers/src/uart2.c
+index e7f7f5a9..7d121755 100644
+--- a/src/drivers/src/uart2.c
++++ b/src/drivers/src/uart2.c
+@@ -36,7 +36,9 @@
+ #include "stream_buffer.h"
+ #include "debug.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ #include "config.h"
+ #include "nvic.h"
+ #include "uart2.h"
+diff --git a/src/drivers/src/uart_syslink.c b/src/drivers/src/uart_syslink.c
+index bbc05518..7c8c7278 100644
+--- a/src/drivers/src/uart_syslink.c
++++ b/src/drivers/src/uart_syslink.c
+@@ -36,7 +36,9 @@
+ #include "queue.h"
+ 
+ #include "config.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ #include "uart_syslink.h"
+ #include "crtp.h"
+ #include "cfassert.h"
+diff --git a/src/drivers/src/ws2812_cf2.c b/src/drivers/src/ws2812_cf2.c
+index 612ef01e..b55f7788 100644
+--- a/src/drivers/src/ws2812_cf2.c
++++ b/src/drivers/src/ws2812_cf2.c
+@@ -35,7 +35,9 @@
+ #include "FreeRTOS.h"
+ #include "semphr.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ //#define TIM1_CCR1_Address 0x40012C34	// physical memory address of Timer 3 CCR1 register
+ 
+diff --git a/src/hal/interface/pm.h b/src/hal/interface/pm.h
+index 6e16de6f..d06c3329 100644
+--- a/src/hal/interface/pm.h
++++ b/src/hal/interface/pm.h
+@@ -27,7 +27,9 @@
+ #ifndef PM_H_
+ #define PM_H_
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ #include "adc.h"
+ #include "syslink.h"
+ #include "deck.h"
+diff --git a/src/hal/interface/sensors_sitl.h b/src/hal/interface/sensors_sitl.h
+new file mode 100644
+index 00000000..1503979d
+--- /dev/null
++++ b/src/hal/interface/sensors_sitl.h
+@@ -0,0 +1,45 @@
++/**
++ *    ||          ____  _ __
++ * +------+      / __ )(_) /_______________ _____  ___
++ * | 0xBC |     / __  / / __/ ___/ ___/ __ `/_  / / _ \
++ * +------+    / /_/ / / /_/ /__/ /  / /_/ / / /_/  __/
++ *  ||  ||    /_____/_/\__/\___/_/   \__,_/ /___/\___/
++ *
++ * Crazyflie simulation firmware
++ *
++ * Copyright (C) 2018 Bitcraze AB
++ * Copyright (C) 2018  Eric Goubault, Sylvie Putot, Franck Djeumou
++ *             Cosynux , LIX , France
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, in version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#ifndef __SENSORS_SIM_H__
++#define __SENSORS_SIM_H__
++
++#include "sensors.h"
++
++void sensorsSimInit(void);
++bool sensorsSimTest(void);
++bool sensorsSimAreCalibrated(void);
++bool sensorsSimManufacturingTest(void);
++void sensorsSimAcquire(sensorData_t *sensors);
++void sensorsSimWaitDataReady(void);
++bool sensorsSimReadGyro(Axis3f *gyro);
++bool sensorsSimReadAcc(Axis3f *acc);
++bool sensorsSimReadMag(Axis3f *mag);
++bool sensorsSimReadBaro(baro_t *baro);
++void sensorsSimSetAccMode(accModes accMode);
++
++#endif // __SENSORS_SIM_H__
+\ No newline at end of file
+diff --git a/src/hal/interface/socketlink.h b/src/hal/interface/socketlink.h
+new file mode 100644
+index 00000000..943af7ea
+--- /dev/null
++++ b/src/hal/interface/socketlink.h
+@@ -0,0 +1,51 @@
++/*
++ *    ||          ____  _ __                           
++ * +------+      / __ )(_) /_______________ _____  ___ 
++ * | 0xBC |     / __  / / __/ ___/ ___/ __ `/_  / / _ \
++ * +------+    / /_/ / / /_/ /__/ /  / /_/ / / /_/  __/
++ *  ||  ||    /_____/_/\__/\___/_/   \__,_/ /___/\___/
++ *
++ * Crazyflie simulation firmware
++ *
++ * Copyright (c) 2018  Eric Goubault, Sylvie Putot, Franck Djeumou
++ *					   Cosynux , LIX , France
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, in version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ *
++ * socketlink.c: Socket implementation of the CRTP link
++ */
++
++#ifndef __SOCKETLINK_H__
++#define __SOCKETLINK_H__
++
++#include <stdbool.h>
++#include <stdint.h>
++#include "crtp.h"
++
++/* Store the UDP port to communicate with CF */
++extern uint16_t crtp_port;
++/* Store an IP address or INADDR_ANY for the server (CF) */
++extern char* address_host;
++// /* Store the cf instance unique Identifiant */
++// extern uint8_t cf_id;
++
++/* Initialize the socket link */
++void socketlinkInit();
++
++/* Return true if the init was successful */
++bool socketlinkTest();
++
++/* Get the socket link (Only link used in SITL) */
++struct crtpLinkOperations * socketlinkGetLink();
++
++#endif
+\ No newline at end of file
+diff --git a/src/hal/src/ledseq.c b/src/hal/src/ledseq.c
+index 0b428818..f23f5e44 100644
+--- a/src/hal/src/ledseq.c
++++ b/src/hal/src/ledseq.c
+@@ -35,7 +35,9 @@
+ #include "semphr.h"
+ #include "static_mem.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ #include "led.h"
+ 
+ #ifdef CONFIG_DEBUG_ENABLE_LED_MORSE
+diff --git a/src/hal/src/pm_sitl.c b/src/hal/src/pm_sitl.c
+new file mode 100644
+index 00000000..97cdc3fb
+--- /dev/null
++++ b/src/hal/src/pm_sitl.c
+@@ -0,0 +1,13 @@
++#include <stdint.h>
++#include "log.h"
++
++// Non-static so sensors_sitl.c can update these when battery simulation is active
++float simBatteryVoltage = 4.2f;
++uint16_t simBatteryVoltageMV = 4200;
++int8_t simPmState = 0;
++
++LOG_GROUP_START(pm)
++LOG_ADD_CORE(LOG_FLOAT, vbat, &simBatteryVoltage)
++LOG_ADD(LOG_UINT16, vbatMV, &simBatteryVoltageMV)
++LOG_ADD_CORE(LOG_INT8, state, &simPmState)
++LOG_GROUP_STOP(pm)
+diff --git a/src/hal/src/radiolink_sitl.c b/src/hal/src/radiolink_sitl.c
+new file mode 100644
+index 00000000..7dfb9e50
+--- /dev/null
++++ b/src/hal/src/radiolink_sitl.c
+@@ -0,0 +1,56 @@
++/*
++ *    ||          ____  _ __
++ * +------+      / __ )(_) /_______________ _____  ___
++ * | 0xBC |     / __  / / __/ ___/ ___/ __ `/_  / / _ \
++ * +------+    / /_/ / / /_/ /__/ /  / /_/ / / /_/  __/
++ *  ||  ||    /_____/_/\__/\___/_/   \__,_/ /___/\___/
++ *
++ * Crazyflie simulation firmware
++ *
++ * Copyright (C) 2011-2012 Bitcraze AB
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, in version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ *
++ * radiolink_sitl.c - Radio link layer SITL stub
++ */
++
++#include <stdint.h>
++#include "log.h"
++
++static uint8_t rssi = 100;
++static uint8_t isConnected = 1;
++static uint16_t count_rx_broadcast = 0;
++static uint16_t count_rx_unicast = 0;
++
++LOG_GROUP_START(radio)
++/**
++ * @brief Radio Signal Strength Indicator [dBm]
++ */
++LOG_ADD_CORE(LOG_UINT8, rssi, &rssi)
++/**
++ * @brief Indicator if a packet was received from the radio within the last RADIO_ACTIVITY_TIMEOUT_MS.
++ */
++LOG_ADD_CORE(LOG_UINT8, isConnected, &isConnected)
++/**
++ * @brief Number of broadcast packets received.
++ * 
++ * Note that this is only 16 bits and overflows. Use overflow correction on the client side.
++ */
++LOG_ADD_CORE(LOG_UINT16, numRxBc, &count_rx_broadcast)
++/**
++ * @brief Number of unicast packets received.
++ * 
++ * Note that this is only 16 bits and overflows. Use overflow correction on the client side.
++ */
++LOG_ADD_CORE(LOG_UINT16, numRxUc, &count_rx_unicast)
++LOG_GROUP_STOP(radio)
+diff --git a/src/hal/src/sensors.c b/src/hal/src/sensors.c
+index 741f856c..eee94f17 100644
+--- a/src/hal/src/sensors.c
++++ b/src/hal/src/sensors.c
+@@ -31,7 +31,9 @@
+ #include "platform.h"
+ #include "debug.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ // https://gcc.gnu.org/onlinedocs/cpp/Stringizing.html
+ #define xstr(s) str(s)
+@@ -49,6 +51,9 @@
+   #include "sensors_bosch.h"
+ #endif
+ 
++#ifdef CONFIG_SENSORS_SITL
++  #include "sensors_sitl.h"
++#endif
+ 
+ typedef struct {
+   SensorImplementation_t implements;
+@@ -140,6 +145,23 @@ static const sensorsImplementation_t sensorImplementations[SensorImplementation_
+     .dataAvailableCallback = nullFunction,
+   },
+ #endif
++#ifdef CONFIG_SENSORS_SITL
++  {
++    .implements = SensorImplementation_sitl,
++    .init = sensorsSimInit,
++    .test = sensorsSimTest,
++    .areCalibrated = sensorsSimAreCalibrated,
++    .manufacturingTest = sensorsSimManufacturingTest,
++    .acquire = sensorsSimAcquire,
++    .waitDataReady = sensorsSimWaitDataReady,
++    .readGyro = sensorsSimReadGyro,
++    .readAcc = sensorsSimReadAcc,
++    .readMag = sensorsSimReadMag,
++    .readBaro = sensorsSimReadBaro,
++    .setAccMode = sensorsSimSetAccMode,
++    .dataAvailableCallback = nullFunction,
++  },
++#endif
+ };
+ 
+ static const sensorsImplementation_t* activeImplementation;
+@@ -207,13 +229,16 @@ void sensorsSetAccMode(accModes accMode) {
+ 
+ void sensorsSuspend()
+ {
++  #ifndef CONFIG_SENSORS_SITL
+   NVIC_DisableIRQ(EXTI15_10_IRQn);
++  #endif
+ }
+ 
+ void sensorsResume()
+ {
++  #ifndef CONFIG_SENSORS_SITL
+   NVIC_EnableIRQ(EXTI15_10_IRQn);
+-
++  #endif
+ }
+ 
+ void __attribute__((used)) EXTI14_Callback(void) {
+diff --git a/src/hal/src/sensors_sitl.c b/src/hal/src/sensors_sitl.c
+new file mode 100644
+index 00000000..68bb3a9c
+--- /dev/null
++++ b/src/hal/src/sensors_sitl.c
+@@ -0,0 +1,712 @@
++/**
++ *    ||          ____  _ __
++ * +------+      / __ )(_) /_______________ _____  ___
++ * | 0xBC |     / __  / / __/ ___/ ___/ __ `/_  / / _ \
++ * +------+    / /_/ / / /_/ /__/ /  / /_/ / / /_/  __/
++ *  ||  ||    /_____/_/\__/\___/_/   \__,_/ /___/\___/
++ *
++ * Crazyflie simulation firmware
++ *
++ * Copyright (c) 2018  Eric Goubault, Sylvie Putot, Franck Djeumou
++ *             Cosynux , LIX , France
++ *
++ * Source file for Sensors simulation using external source of measurement
++ * This is based on the work made in sensors_cf2.c 
++ */
++
++/* FreeRTOS includes */
++#include "FreeRTOS.h"
++#include "task.h"
++#include "semphr.h"
++
++#include "sensors_sitl.h"
++
++#include "system.h"
++#include "debug.h"
++
++#ifndef CONFIG_PLATFORM_SITL
++/* Add a simulate driver for Zrange*/
++// #include "zranger.h"
++// #include "zranger2.h"
++#include "ledseq.h"
++#include "sound.h"
++#endif
++
++#include "estimator.h"
++#include "range.h"
++#include "stabilizer_types.h"
++#include "configblock.h"
++#include "filter.h"
++#include "param.h"
++#include "log.h"
++
++#include "crtp.h"
++#include "range.h"
++
++#include <math.h>
++#include <string.h>
++
++// Battery voltage variables from pm_sitl.c
++extern float simBatteryVoltage;
++extern uint16_t simBatteryVoltageMV;
++extern int8_t simPmState;
++
++// We try to be as close as possible from the real sensor implementation
++#define MAG_GAUSS_PER_LSB                                 666.7f
++#define SENSORS_DEG_PER_LSB_CFG                           (float)((2 * 2000.0) / 65536.0)
++#define SENSORS_G_PER_LSB_CFG                             (float)((2 * 16) / 65536.0)
++
++#define SENSORS_BIAS_SAMPLES                              2000
++#define SENSORS_ACC_SCALE_SAMPLES                         1000
++
++#define SENSORS_GYRO_BIAS_CALCULATE_STDDEV
++
++#define GYRO_NBR_OF_AXES                                  3
++#define GYRO_MIN_BIAS_TIMEOUT_MS                          M2T(1*1000)
++
++// Number of samples used in variance calculation. Changing this effects the threshold
++#define SENSORS_NBR_OF_BIAS_SAMPLES                       1024
++
++// Variance threshold to take zero bias for gyro
++#define GYRO_VARIANCE_BASE                                5000
++#define GYRO_VARIANCE_THRESHOLD_X                         (GYRO_VARIANCE_BASE)
++#define GYRO_VARIANCE_THRESHOLD_Y                         (GYRO_VARIANCE_BASE)
++#define GYRO_VARIANCE_THRESHOLD_Z                         (GYRO_VARIANCE_BASE)
++
++// Sensor type (first byte of crtp packet)
++enum SensorTypeSim_e {
++  SENSOR_GYRO_ACC_SIM           = 0,
++  SENSOR_MAG_SIM                = 1,
++  SENSOR_BARO_SIM               = 2,
++  SENSOR_RANGE_SIM              = 3,
++  SENSOR_BATT_SIM               = 4,
++  SENSOR_TOF_SIM                = 5,
++  SENSOR_FLOW_SIM               = 6,
++};
++
++typedef struct
++{
++  Axis3f     bias;
++  bool       isBiasValueFound;
++  bool       isBufferFilled;
++  Axis3i16*  bufHead;
++  Axis3i16   buffer[SENSORS_NBR_OF_BIAS_SAMPLES];
++} BiasObj;
++
++static xQueueHandle accelerometerDataQueue;
++static xQueueHandle gyroDataQueue;
++static xQueueHandle magnetometerDataQueue;
++static xQueueHandle barometerDataQueue;
++static xSemaphoreHandle dataReady;
++
++static bool isInit = false;
++static sensorData_t sensors;
++
++static BiasObj gyroBiasRunning;
++static Axis3f  gyroBias;
++#if defined(SENSORS_GYRO_BIAS_CALCULATE_STDDEV) && defined (GYRO_BIAS_LIGHT_WEIGHT)
++static Axis3f  gyroBiasStdDev;
++#endif
++static bool  gyroBiasFound = false;
++static float accScaleSum = 0;
++static float accScale = 1;
++
++// Low Pass filtering <---> Not sure if needed when doing simulation
++#define GYRO_LPF_CUTOFF_FREQ  80
++#define ACCEL_LPF_CUTOFF_FREQ 30
++static lpf2pData accLpf[3];
++static lpf2pData gyroLpf[3];
++static void applyAxis3fLpf(lpf2pData *data, Axis3f* in);
++
++static bool isBarometerPresent = false;
++static bool isMagnetometerPresent = false;
++
++static bool isMpu6500TestPassed = false;
++static bool isAK8963TestPassed = false;
++static bool isLPS25HTestPassed = false;
++
++// Pre-calculated values for accelerometer alignment
++float cosPitch;
++float sinPitch;
++float cosRoll;
++float sinRoll;
++
++static void processAccGyroMeasurements(const uint8_t *buffer);
++static void processMagnetometerMeasurements(const uint8_t *buffer);
++static void processBarometerMeasurements(const uint8_t *buffer);
++static void processRangeMeasurements(const uint8_t *buffer);
++
++#ifdef GYRO_GYRO_BIAS_LIGHT_WEIGHT
++static bool processGyroBiasNoBuffer(int16_t gx, int16_t gy, int16_t gz, Axis3f *gyroBiasOut);
++#else
++static bool processGyroBias(int16_t gx, int16_t gy, int16_t gz,  Axis3f *gyroBiasOut);
++#endif
++static bool processAccScale(int16_t ax, int16_t ay, int16_t az);
++static void sensorsBiasObjInit(BiasObj* bias);
++static void sensorsCalculateVarianceAndMean(BiasObj* bias, Axis3f* varOut, Axis3f* meanOut);
++/*static void sensorsCalculateBiasMean(BiasObj* bias, Axis3i32* meanOut);*/
++static void sensorsAddBiasValue(BiasObj* bias, int16_t x, int16_t y, int16_t z);
++static bool sensorsFindBiasValue(BiasObj* bias);
++static void sensorsAccAlignToGravity(Axis3f* in, Axis3f* out);
++
++// static void sensorsDeviceInit(void);
++// static void sensorsTaskInit(void);
++// static void sensorsTask(void *param);
++
++bool sensorsSimReadGyro(Axis3f *gyro)
++{
++  return (pdTRUE == xQueueReceive(gyroDataQueue, gyro, 0));
++}
++
++bool sensorsSimReadAcc(Axis3f *acc)
++{
++  return (pdTRUE == xQueueReceive(accelerometerDataQueue, acc, 0));
++}
++
++bool sensorsSimReadMag(Axis3f *mag)
++{
++  return (pdTRUE == xQueueReceive(magnetometerDataQueue, mag, 0));
++}
++
++bool sensorsSimReadBaro(baro_t *baro)
++{
++  return (pdTRUE == xQueueReceive(barometerDataQueue, baro, 0));
++}
++
++void sensorsSimAcquire(sensorData_t *sensors)
++{
++  sensorsReadGyro(&sensors->gyro);
++  sensorsReadAcc(&sensors->acc);
++  sensorsReadMag(&sensors->mag);
++  sensorsReadBaro(&sensors->baro);
++  // DEBUG_PRINT("%f %f %f\n", (double)sensors->gyro.x, (double)sensors->gyro.y, (double)sensors->gyro.z);
++}
++
++bool sensorsSimAreCalibrated() {
++  return gyroBiasFound;
++}
++
++static void sensorsTask(void *param)
++{
++  measurement_t measurement;
++  DEBUG_PRINT("Entering sensorsTask() \n");
++  systemWaitStart();
++  
++  CRTPPacket p;
++  crtpInitTaskQueue(CRTP_PORT_SETPOINT_SIM);
++  bool lastGyroBiasFound = false;
++
++  while (1)
++  {
++    // Wait for a new sensor message to arrive
++    crtpReceivePacketBlock(CRTP_PORT_SETPOINT_SIM, &p);
++    switch (p.data[0])
++    {
++      case SENSOR_GYRO_ACC_SIM:
++        processAccGyroMeasurements(&(p.data[1]));
++        measurement.type = MeasurementTypeAcceleration;
++        measurement.data.acceleration.acc = sensors.acc;
++        estimatorEnqueue(&measurement);
++        measurement.type = MeasurementTypeGyroscope;
++        measurement.data.gyroscope.gyro = sensors.gyro;
++        estimatorEnqueue(&measurement);
++        xQueueOverwrite(accelerometerDataQueue, &sensors.acc);
++        xQueueOverwrite(gyroDataQueue, &sensors.gyro);
++        break;
++      case SENSOR_MAG_SIM:
++        processMagnetometerMeasurements(&(p.data[1]));
++        xQueueOverwrite(magnetometerDataQueue, &sensors.mag);
++        break;
++      case SENSOR_BARO_SIM:
++        processBarometerMeasurements(&(p.data[1]));
++        // measurement.type = MeasurementTypeBarometer;
++        // measurement.data.barometer.baro = sensors.baro;
++        // estimatorEnqueue(&measurement);
++        xQueueOverwrite(barometerDataQueue, &sensors.baro);
++        break;
++      case SENSOR_RANGE_SIM:
++        processRangeMeasurements(&(p.data[1]));
++        break;
++      case SENSOR_TOF_SIM:
++      {
++        float distance;
++        memcpy(&distance, &p.data[1], sizeof(float));
++        rangeSet(rangeDown, distance);
++        if (distance > 0.01f && distance < 5.0f) {
++          // Exponential noise model matching VL53L1x (zranger2.c)
++          static const float expPointA = 2.5f;
++          static const float expStdA   = 0.0025f;
++          static const float expPointB = 4.0f;
++          static const float expStdB   = 0.2f;
++          static const float expCoeff  = 2.9214f; // ln(expStdB/expStdA) / (expPointB - expPointA)
++          float stdDev = expStdA * (1.0f + expf(expCoeff * (distance - expPointA)));
++          rangeEnqueueDownRangeInEstimator(distance, stdDev, xTaskGetTickCount());
++        }
++        break;
++      }
++      case SENSOR_FLOW_SIM:
++      {
++        flowMeasurement_t flowData;
++        memcpy(&flowData.dpixelx, &p.data[1], sizeof(float));
++        memcpy(&flowData.dpixely, &p.data[5], sizeof(float));
++        flowData.stdDevX = 2.0f;  // matches PMW3901 flowdeck driver default
++        flowData.stdDevY = 2.0f;
++        flowData.dt = 0.01f;
++        memcpy(&flowData.dt, &p.data[9], sizeof(float));
++        estimatorEnqueueFlow(&flowData);
++        break;
++      }
++      case SENSOR_BATT_SIM:
++      {
++        float voltage;
++        memcpy(&voltage, &p.data[1], sizeof(float));
++        simBatteryVoltage = voltage;
++        simBatteryVoltageMV = (uint16_t)(voltage * 1000.0f);
++        simPmState = (voltage < 3.0f) ? 3 : 0;
++        break;
++      }
++      default :
++        break;
++    }
++
++    // Answer while gyro bias not found
++    if (!lastGyroBiasFound && gyroBiasFound){
++      p.data[0] = gyroBiasFound;
++      p.size = 1;
++      lastGyroBiasFound =  gyroBiasFound;
++      crtpSendPacket(&p);
++    }
++    xSemaphoreGive(dataReady);
++  }
++}
++
++void sensorsSimWaitDataReady(void)
++{
++  xSemaphoreTake(dataReady, portMAX_DELAY);
++}
++
++void processBarometerMeasurements(const uint8_t *buffer)
++{
++  const baro_t *baroData = (baro_t *) buffer;
++
++  sensors.baro.pressure = baroData->pressure;
++  sensors.baro.temperature = baroData->temperature;
++  sensors.baro.asl = baroData->asl;
++}
++
++void processRangeMeasurements(const uint8_t *buffer)
++{
++  // buffer layout: 5 x float32 (front, back, left, right, up) in meters
++  const float *ranges = (const float *)buffer;
++  rangeSet(rangeFront, ranges[0]);
++  rangeSet(rangeBack,  ranges[1]);
++  rangeSet(rangeLeft,  ranges[2]);
++  rangeSet(rangeRight, ranges[3]);
++  rangeSet(rangeUp,    ranges[4]);
++}
++
++void processMagnetometerMeasurements(const uint8_t *buffer)
++{
++  // (real value in G / SENSORS_G_PER_LSB_CFG)
++  const Axis3i16 *magData = (Axis3i16 *) buffer;
++
++  sensors.mag.x = (float)magData->x / MAG_GAUSS_PER_LSB;
++  sensors.mag.y = (float)magData->y / MAG_GAUSS_PER_LSB;
++  sensors.mag.z = (float)magData->z / MAG_GAUSS_PER_LSB;
++}
++
++void processAccGyroMeasurements(const uint8_t *buffer)
++{
++  Axis3f accScaled;
++
++  // (real value in G / SENSORS_G_PER_LSB_CFG) from gazebo SIM
++  const Axis3i16 *accData = (Axis3i16 *) buffer;
++  //(real value in deg / SENSORS_DEG_PER_LSB_CFG) from gazebo SIM
++  const Axis3i16 *gyroData = (Axis3i16 *) (buffer + sizeof(Axis3i16));
++
++
++#ifdef GYRO_BIAS_LIGHT_WEIGHT
++  gyroBiasFound = processGyroBiasNoBuffer(gyroData->x, gyroData->y, gyroData->z, &gyroBias);
++#else
++  gyroBiasFound = processGyroBias(gyroData->x, gyroData->y, gyroData->z, &gyroBias);
++#endif
++  if (gyroBiasFound)
++  {
++     processAccScale(accData->x, accData->y, accData->z);
++  }
++
++  sensors.gyro.x =  (gyroData->x - gyroBias.x) * SENSORS_DEG_PER_LSB_CFG;
++  sensors.gyro.y =  (gyroData->y - gyroBias.y) * SENSORS_DEG_PER_LSB_CFG;
++  sensors.gyro.z =  (gyroData->z - gyroBias.z) * SENSORS_DEG_PER_LSB_CFG;
++  applyAxis3fLpf((lpf2pData*)(&gyroLpf), &sensors.gyro);
++
++  accScaled.x =  (accData->x) * SENSORS_G_PER_LSB_CFG / accScale;
++  accScaled.y =  (accData->y) * SENSORS_G_PER_LSB_CFG / accScale;
++  accScaled.z =  (accData->z) * SENSORS_G_PER_LSB_CFG / accScale;
++  sensorsAccAlignToGravity(&accScaled, &sensors.acc);
++  applyAxis3fLpf((lpf2pData*)(&accLpf), &sensors.acc);
++}
++
++static void sensorsDeviceInit(void)
++{
++  isMagnetometerPresent = true;
++  isBarometerPresent = true;
++
++  DEBUG_PRINT("AK8963 I2C connection [OK].\n");
++  DEBUG_PRINT("LPS25H I2C connection [OK].\n");
++
++  cosPitch = cosf(configblockGetCalibPitch() * (float) M_PI/180);
++  sinPitch = sinf(configblockGetCalibPitch() * (float) M_PI/180);
++  cosRoll = cosf(configblockGetCalibRoll() * (float) M_PI/180);
++  sinRoll = sinf(configblockGetCalibRoll() * (float) M_PI/180);
++
++  // Init second order filer for accelerometer
++  for (uint8_t i = 0; i < 3; i++)
++  {
++    lpf2pInit(&gyroLpf[i], 1000, GYRO_LPF_CUTOFF_FREQ);
++    lpf2pInit(&accLpf[i],  1000, ACCEL_LPF_CUTOFF_FREQ);
++  }
++}
++
++static void sensorsTaskInit(void)
++{
++  // Use to have access to the sensors data
++  dataReady = xSemaphoreCreateBinary();
++
++  accelerometerDataQueue = xQueueCreate(1, sizeof(Axis3f));
++  gyroDataQueue = xQueueCreate(1, sizeof(Axis3f));
++  magnetometerDataQueue = xQueueCreate(1, sizeof(Axis3f));
++  barometerDataQueue = xQueueCreate(1, sizeof(baro_t));
++
++  xTaskCreate(sensorsTask, SENSORS_TASK_NAME, SENSORS_TASK_STACKSIZE, NULL, SENSORS_TASK_PRI, NULL);
++}
++
++
++void sensorsSimInit(void)
++{
++  if (isInit)
++  {
++    return;
++  }
++
++  sensorsBiasObjInit(&gyroBiasRunning);
++  sensorsDeviceInit();
++  sensorsTaskInit();
++
++  // Initialize ranges to max so LOG reads don't return 0mm before
++  // the first range packet arrives from the simulator.  Without this,
++  // cflib scripts may see 0-valued ranges and trigger safety checks
++  // (e.g. "top_range < 0.2" in wall-following examples).
++  rangeSet(rangeFront, 4.0f);
++  rangeSet(rangeBack,  4.0f);
++  rangeSet(rangeLeft,  4.0f);
++  rangeSet(rangeRight, 4.0f);
++  rangeSet(rangeUp,    4.0f);
++
++  isInit = true;
++}
++
++bool sensorsSimTest(void)
++{
++  bool testStatus = true;
++
++  if (!isInit)
++  {
++    DEBUG_PRINT("Error while initializing sensor task\r\n");
++    testStatus = false;
++  }else {
++    isMpu6500TestPassed = true;
++    isLPS25HTestPassed = true;
++    isAK8963TestPassed = true;
++    testStatus= true;
++    DEBUG_PRINT("SENSORS TEST PASSED [OK].\n");
++  }
++
++  return testStatus;
++}
++
++/**
++ * Calculates accelerometer scale out of SENSORS_ACC_SCALE_SAMPLES samples. Should be called when
++ * platform is stable.
++ */
++static bool processAccScale(int16_t ax, int16_t ay, int16_t az)
++{
++  static bool accBiasFound = false;
++  static uint32_t accScaleSumCount = 0;
++
++  if (!accBiasFound)
++  {
++    accScaleSum += sqrtf(powf(ax * SENSORS_G_PER_LSB_CFG, 2) + powf(ay * SENSORS_G_PER_LSB_CFG, 2) + powf(az * SENSORS_G_PER_LSB_CFG, 2));
++    accScaleSumCount++;
++
++    if (accScaleSumCount == SENSORS_ACC_SCALE_SAMPLES)
++    {
++      accScale = accScaleSum / SENSORS_ACC_SCALE_SAMPLES;
++      accBiasFound = true;
++    }
++  }
++
++  return accBiasFound;
++}
++
++#ifdef GYRO_BIAS_LIGHT_WEIGHT
++/**
++ * Calculates the bias out of the first SENSORS_BIAS_SAMPLES gathered. Requires no buffer
++ * but needs platform to be stable during startup.
++ */
++static bool processGyroBiasNoBuffer(int16_t gx, int16_t gy, int16_t gz, Axis3f *gyroBiasOut)
++{
++  static uint32_t gyroBiasSampleCount = 0;
++  static bool gyroBiasNoBuffFound = false;
++  static Axis3i64 gyroBiasSampleSum;
++  static Axis3i64 gyroBiasSampleSumSquares;
++
++  if (!gyroBiasNoBuffFound)
++  {
++    // If the gyro has not yet been calibrated:
++    // Add the current sample to the running mean and variance
++    gyroBiasSampleSum.x += gx;
++    gyroBiasSampleSum.y += gy;
++    gyroBiasSampleSum.z += gz;
++#ifdef SENSORS_GYRO_BIAS_CALCULATE_STDDEV
++    gyroBiasSampleSumSquares.x += gx * gx;
++    gyroBiasSampleSumSquares.y += gy * gy;
++    gyroBiasSampleSumSquares.z += gz * gz;
++#endif
++    gyroBiasSampleCount += 1;
++
++    // If we then have enough samples, calculate the mean and standard deviation
++    if (gyroBiasSampleCount == SENSORS_BIAS_SAMPLES)
++    {
++      gyroBiasOut->x = (float)(gyroBiasSampleSum.x) / SENSORS_BIAS_SAMPLES;
++      gyroBiasOut->y = (float)(gyroBiasSampleSum.y) / SENSORS_BIAS_SAMPLES;
++      gyroBiasOut->z = (float)(gyroBiasSampleSum.z) / SENSORS_BIAS_SAMPLES;
++
++#ifdef SENSORS_GYRO_BIAS_CALCULATE_STDDEV
++      gyroBiasStdDev.x = sqrtf((float)(gyroBiasSampleSumSquares.x) / SENSORS_BIAS_SAMPLES - (gyroBiasOut->x * gyroBiasOut->x));
++      gyroBiasStdDev.y = sqrtf((float)(gyroBiasSampleSumSquares.y) / SENSORS_BIAS_SAMPLES - (gyroBiasOut->y * gyroBiasOut->y));
++      gyroBiasStdDev.z = sqrtf((float)(gyroBiasSampleSumSquares.z) / SENSORS_BIAS_SAMPLES - (gyroBiasOut->z * gyroBiasOut->z));
++#endif
++      gyroBiasNoBuffFound = true;
++    }
++  }
++
++  return gyroBiasNoBuffFound;
++}
++#else
++/**
++ * Calculates the bias first when the gyro variance is below threshold. Requires a buffer
++ * but calibrates platform first when it is stable.
++ */
++static bool processGyroBias(int16_t gx, int16_t gy, int16_t gz, Axis3f *gyroBiasOut)
++{
++  sensorsAddBiasValue(&gyroBiasRunning, gx, gy, gz);
++
++  if (!gyroBiasRunning.isBiasValueFound)
++  {
++    sensorsFindBiasValue(&gyroBiasRunning);
++    if (gyroBiasRunning.isBiasValueFound)
++    {
++#ifndef CONFIG_PLATFORM_SITL
++      soundSetEffect(SND_CALIB);
++      ledseqRun(SYS_LED, seq_calibrated);
++#endif
++      DEBUG_PRINT("GYro Bias found \n");
++    }
++  }
++
++  gyroBiasOut->x = gyroBiasRunning.bias.x;
++  gyroBiasOut->y = gyroBiasRunning.bias.y;
++  gyroBiasOut->z = gyroBiasRunning.bias.z;
++
++  return gyroBiasRunning.isBiasValueFound;
++}
++#endif
++
++static void sensorsBiasObjInit(BiasObj* bias)
++{
++  bias->isBufferFilled = false;
++  bias->bufHead = bias->buffer;
++}
++
++
++/**
++ * Calculates the variance and mean for the bias buffer.
++ */
++static void sensorsCalculateVarianceAndMean(BiasObj* bias, Axis3f* varOut, Axis3f* meanOut)
++{
++  uint32_t i;
++  int64_t sum[GYRO_NBR_OF_AXES] = {0};
++  int64_t sumSq[GYRO_NBR_OF_AXES] = {0};
++
++  for (i = 0; i < SENSORS_NBR_OF_BIAS_SAMPLES; i++)
++  {
++    sum[0] += bias->buffer[i].x;
++    sum[1] += bias->buffer[i].y;
++    sum[2] += bias->buffer[i].z;
++    sumSq[0] += bias->buffer[i].x * bias->buffer[i].x;
++    sumSq[1] += bias->buffer[i].y * bias->buffer[i].y;
++    sumSq[2] += bias->buffer[i].z * bias->buffer[i].z;
++  }
++
++  varOut->x = (sumSq[0] - ((int64_t)sum[0] * sum[0]) / SENSORS_NBR_OF_BIAS_SAMPLES);
++  varOut->y = (sumSq[1] - ((int64_t)sum[1] * sum[1]) / SENSORS_NBR_OF_BIAS_SAMPLES);
++  varOut->z = (sumSq[2] - ((int64_t)sum[2] * sum[2]) / SENSORS_NBR_OF_BIAS_SAMPLES);
++
++  meanOut->x = (float)sum[0] / SENSORS_NBR_OF_BIAS_SAMPLES;
++  meanOut->y = (float)sum[1] / SENSORS_NBR_OF_BIAS_SAMPLES;
++  meanOut->z = (float)sum[2] / SENSORS_NBR_OF_BIAS_SAMPLES;
++}
++
++/**
++ * Calculates the mean for the bias buffer.
++ */
++/*static void __attribute__((used)) sensorsCalculateBiasMean(BiasObj* bias, Axis3i32* meanOut)
++{
++  uint32_t i;
++  int32_t sum[GYRO_NBR_OF_AXES] = {0};
++  for (i = 0; i < SENSORS_NBR_OF_BIAS_SAMPLES; i++)
++  {
++    sum[0] += bias->buffer[i].x;
++    sum[1] += bias->buffer[i].y;
++    sum[2] += bias->buffer[i].z;
++  }
++  meanOut->x = sum[0] / SENSORS_NBR_OF_BIAS_SAMPLES;
++  meanOut->y = sum[1] / SENSORS_NBR_OF_BIAS_SAMPLES;
++  meanOut->z = sum[2] / SENSORS_NBR_OF_BIAS_SAMPLES;
++}*/
++
++/**
++ * Adds a new value to the variance buffer and if it is full
++ * replaces the oldest one. Thus a circular buffer.
++ */
++static void sensorsAddBiasValue(BiasObj* bias, int16_t x, int16_t y, int16_t z)
++{
++  bias->bufHead->x = x;
++  bias->bufHead->y = y;
++  bias->bufHead->z = z;
++  bias->bufHead++;
++
++  if (bias->bufHead >= &bias->buffer[SENSORS_NBR_OF_BIAS_SAMPLES])
++  {
++    bias->bufHead = bias->buffer;
++    bias->isBufferFilled = true;
++  }
++}
++
++/**
++ * Checks if the variances is below the predefined thresholds.
++ * The bias value should have been added before calling this.
++ * @param bias  The bias object
++ */
++static bool sensorsFindBiasValue(BiasObj* bias)
++{
++  static int32_t varianceSampleTime;
++  bool foundBias = false;
++
++  if (bias->isBufferFilled)
++  {
++    Axis3f variance;
++    Axis3f mean;
++
++    sensorsCalculateVarianceAndMean(bias, &variance, &mean);
++
++    /*if (variance.x < GYRO_VARIANCE_THRESHOLD_X &&
++        variance.y < GYRO_VARIANCE_THRESHOLD_Y &&
++        variance.z < GYRO_VARIANCE_THRESHOLD_Z &&
++        (varianceSampleTime + GYRO_MIN_BIAS_TIMEOUT_MS < xTaskGetTickCount()))
++    {*/
++    if (varianceSampleTime + GYRO_MIN_BIAS_TIMEOUT_MS < xTaskGetTickCount())
++    {
++      varianceSampleTime = xTaskGetTickCount();
++      bias->bias.x = mean.x;
++      bias->bias.y = mean.y;
++      bias->bias.z = mean.z;
++      foundBias = true;
++      bias->isBiasValueFound = true;
++    }
++  }
++
++  return foundBias;
++}
++
++bool sensorsSimManufacturingTest(void)
++{
++  return true;
++}
++
++/**
++ * Compensate for a miss-aligned accelerometer. It uses the trim
++ * data gathered from the UI and written in the config-block to
++ * rotate the accelerometer to be aligned with gravity.
++ */
++static void sensorsAccAlignToGravity(Axis3f* in, Axis3f* out)
++{
++  Axis3f rx;
++  Axis3f ry;
++
++  // Rotate around x-axis
++  rx.x = in->x;
++  rx.y = in->y * cosRoll - in->z * sinRoll;
++  rx.z = in->y * sinRoll + in->z * cosRoll;
++
++  // Rotate around y-axis
++  ry.x = rx.x * cosPitch - rx.z * sinPitch;
++  ry.y = rx.y;
++  ry.z = -rx.x * sinPitch + rx.z * cosPitch;
++
++  out->x = ry.x;
++  out->y = ry.y;
++  out->z = ry.z;
++}
++
++void sensorsSimSetAccMode(accModes accMode)
++{
++  switch (accMode)
++  {
++    case ACC_MODE_PROPTEST:
++      // mpu6500SetAccelDLPF(MPU6500_ACCEL_DLPF_BW_460);
++      for (uint8_t i = 0; i < 3; i++)
++      {
++        lpf2pInit(&accLpf[i],  1000, 500);
++      }
++      break;
++    case ACC_MODE_FLIGHT:
++    default:
++      // mpu6500SetAccelDLPF(MPU6500_ACCEL_DLPF_BW_41);
++      for (uint8_t i = 0; i < 3; i++)
++      {
++        lpf2pInit(&accLpf[i],  1000, ACCEL_LPF_CUTOFF_FREQ);
++      }
++      break;
++  }
++}
++
++static void applyAxis3fLpf(lpf2pData *data, Axis3f* in)
++{
++  for (uint8_t i = 0; i < 3; i++) {
++    in->axis[i] = lpf2pApply(&data[i], in->axis[i]);
++  }
++}
++
++#ifdef GYRO_ADD_RAW_AND_VARIANCE_LOG_VALUES
++LOG_GROUP_START(gyro)
++LOG_ADD(LOG_INT16, xRaw, &gyroRaw.x)
++LOG_ADD(LOG_INT16, yRaw, &gyroRaw.y)
++LOG_ADD(LOG_INT16, zRaw, &gyroRaw.z)
++LOG_ADD(LOG_FLOAT, xVariance, &gyroBiasRunning.variance.x)
++LOG_ADD(LOG_FLOAT, yVariance, &gyroBiasRunning.variance.y)
++LOG_ADD(LOG_FLOAT, zVariance, &gyroBiasRunning.variance.z)
++LOG_GROUP_STOP(gyro)
++#endif
++
++PARAM_GROUP_START(imu_sensors)
++PARAM_ADD(PARAM_UINT8 | PARAM_RONLY, HMC5883L_SIM, &isMagnetometerPresent)
++PARAM_ADD(PARAM_UINT8 | PARAM_RONLY, MS5611_SIM, &isBarometerPresent) // TODO: Rename MS5611 to LPS25H. Client needs to be updated at the same time.
++PARAM_GROUP_STOP(imu_sensors)
++
++PARAM_GROUP_START(imu_tests)
++PARAM_ADD(PARAM_UINT8 | PARAM_RONLY, MPU6500_SIM, &isMpu6500TestPassed)
++PARAM_ADD(PARAM_UINT8 | PARAM_RONLY, HMC5883L_SIM, &isAK8963TestPassed)
++PARAM_ADD(PARAM_UINT8 | PARAM_RONLY, MS5611_SIM, &isLPS25HTestPassed) // TODO: Rename MS5611 to LPS25H. Client needs to be updated at the same time.
++PARAM_GROUP_STOP(imu_tests)
+\ No newline at end of file
+diff --git a/src/hal/src/socketlink.c b/src/hal/src/socketlink.c
+new file mode 100644
+index 00000000..0867695a
+--- /dev/null
++++ b/src/hal/src/socketlink.c
+@@ -0,0 +1,237 @@
++/*
++ *    ||          ____  _ __                           
++ * +------+      / __ )(_) /_______________ _____  ___ 
++ * | 0xBC |     / __  / / __/ ___/ ___/ __ `/_  / / _ \
++ * +------+    / /_/ / / /_/ /__/ /  / /_/ / / /_/  __/
++ *  ||  ||    /_____/_/\__/\___/_/   \__,_/ /___/\___/
++ *
++ * Crazyflie simulation firmware
++ *
++ * Copyright (c) 2018  Eric Goubault, Sylvie Putot, Franck Djeumou
++ *             Cosynux , LIX , France
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, in version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ *
++ * socketlink.c: Socket implementation of the CRTP link
++ */
++#define DEBUG_MODULE "SOCKET_LINK"
++#include <stdbool.h>
++#include <string.h>
++
++#include "config.h"
++#include "socketlink.h"
++#include "crtp.h"
++
++#include "FreeRTOS.h"
++#include "task.h"
++#include "queue.h"
++#include "queuemonitor.h"
++#include "semphr.h"
++#include "debug.h"
++#include "cfassert.h"
++
++#include <stdlib.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <sys/types.h>
++#include <sys/socket.h>
++#include <poll.h>
++
++#include <errno.h>
++
++// Global variables for socket management
++static struct sockaddr_in myaddr;
++static struct sockaddr_in remaddr;
++static socklen_t addrlen;
++static int fd;
++static struct pollfd fds[1];
++
++
++static bool isInit = false;
++static xQueueHandle crtpPacketDelivery;
++
++static int socketlinkSendPacket(CRTPPacket *p);
++static int socketlinkSetEnable(bool enable);
++static int socketlinkReceiveCRTPPacket(CRTPPacket *p);
++
++
++static struct crtpLinkOperations socketlinkOp =
++{
++  .setEnable         = socketlinkSetEnable,
++  .sendPacket        = socketlinkSendPacket,
++  .receivePacket     = socketlinkReceiveCRTPPacket,
++};
++
++static CRTPPacket p;
++static uint8_t socket_buff[33];
++
++static void socketlinkTask(void *param)
++{
++  int recvlen;
++  while(1)
++  {
++    while (poll(&fds[0], (sizeof(fds[0]) / sizeof(fds[0])), -1) < 0){
++      // Failed when no data because of EINTR caused by FreeRTOS linux port)
++      // Workaround is to put a delay for the moment
++      vTaskDelay(M2T(1));
++    }
++
++    // Check if any data was received
++    if (fds[0].revents & POLLIN){
++      // Fetch a socket data
++      recvlen = recvfrom(fd, p.raw, sizeof(p.raw), 0, (struct sockaddr *)&remaddr, &addrlen);
++      if (recvlen > 0){
++        p.size = recvlen - 1; // We remove the header size
++        // xQueueSend(crtpPacketDelivery, &p, 0);
++        ASSERT(xQueueSend(crtpPacketDelivery, &p, 0) == pdPASS);
++      } else {
++        DEBUG_PRINT("error : %s \n" , strerror(errno));
++      }
++    } 
++  }
++
++}
++
++static int socketlinkReceiveCRTPPacket(CRTPPacket *p)
++{
++  if (xQueueReceive(crtpPacketDelivery, p, M2T(100)) == pdTRUE)
++  {
++    return 0;
++  }
++
++  return -1;
++}
++
++static int socketlinkSendPacket(CRTPPacket *p)
++{
++  int dataSize;
++
++  // Data size up to 31 Bytes
++  ASSERT(p->size < 32); 
++
++  if (p->size > CRTP_MAX_DATA_SIZE)
++    return 0;
++
++  dataSize = p->size + 1;
++  memcpy(&(socket_buff[0]) , p->raw , dataSize);
++  dataSize = sendto(fd, socket_buff, dataSize, 0, (struct sockaddr *)&remaddr, addrlen);
++  // DEBUG_PRINT("sending : port: %d channel: %d data:%d %d %d size: %d\n" , p->port , p->channel, p->data[0], p->data[1], p->data[2], p->size);
++  // Shutdown if not able to send ???
++  if (dataSize < 0){
++    DEBUG_PRINT("error : %s \n" , strerror(errno));
++    return 0;
++  }
++  return (dataSize > 0);
++}
++
++static int socketlinkSetEnable(bool enable)
++{
++  return 0;
++}
++
++/*
++ * Public functions
++ */
++void socketlinkInit()
++{
++  if(isInit)
++    return;
++
++  // Create UDP socket
++  if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0){
++    isInit = false;
++    DEBUG_PRINT("cannot create socket\n");
++    ASSERT_FAILED();
++    return;
++  }
++  DEBUG_PRINT("Create socket succeed \n");
++
++  // Let the OS pick this instance port and address
++  memset((char *)&myaddr, 0, sizeof(myaddr));
++  myaddr.sin_family = AF_INET;
++  myaddr.sin_addr.s_addr = htonl(INADDR_ANY);
++  myaddr.sin_port = htons(0);
++
++  if (bind(fd, (struct sockaddr *)&myaddr, sizeof(myaddr)) < 0){
++    isInit =false;
++    DEBUG_PRINT("Binding failed \n");
++    ASSERT_FAILED();
++    return;
++  }
++  DEBUG_PRINT("Binding succeed \n");
++
++  // Initialize destination address (gazebo handler server)
++  memset((char *)&remaddr, 0, sizeof(remaddr));\
++  remaddr.sin_family = AF_INET;
++  if (strcmp(address_host, "INADDR_ANY") == 0){
++    remaddr.sin_addr.s_addr =  htonl(INADDR_ANY);
++  } else if (inet_addr(address_host) == INADDR_NONE){
++    isInit = false;
++    return;
++  } else{
++    remaddr.sin_addr.s_addr = inet_addr(address_host); // Set the address if valid
++  }
++  remaddr.sin_port = htons(crtp_port); // Set the port
++  //Initialize addrlen
++  addrlen =  sizeof(remaddr);
++
++  // initialize the poll structure
++  fds[0].fd = fd;
++  fds[0].events = POLLIN;
++
++  // Wait for validation by the SITL instance
++  DEBUG_PRINT("Waiting for connection with gazebo ... \n");
++  bool commInitialized = false;
++  int recvlen;
++  uint8_t count;
++  const uint8_t max_count = 10;
++
++  p.header = 0xF3;  // send null header for identification process
++  p.size = 0;       // No data when doing identification process
++  while(!commInitialized)
++  {
++    count = 0;
++    socketlinkSendPacket(&p);
++    while(count < max_count){
++      recvlen = recvfrom(fd, socket_buff, sizeof(socket_buff), 0, (struct sockaddr *)&remaddr, &addrlen);
++      if (recvlen == 1 && socket_buff[0] == 0xF3){
++          commInitialized = true;
++          break;
++      }
++      count++;
++      vTaskDelay(M2T(10));
++    }
++  }
++
++  DEBUG_PRINT("Connection established with gazebo \n");
++
++
++  // Create RX queue and start socketlink task
++  crtpPacketDelivery = xQueueCreate(2000, sizeof(CRTPPacket));
++  DEBUG_QUEUE_MONITOR_REGISTER(crtpPacketDelivery);
++
++  xTaskCreate(socketlinkTask, USBLINK_TASK_NAME,
++              USBLINK_TASK_STACKSIZE, NULL, USBLINK_TASK_PRI-1, NULL);
++
++  isInit = true;
++}
++
++bool socketlinkTest()
++{
++  return isInit;
++}
++
++struct crtpLinkOperations * socketlinkGetLink()
++{
++  return &socketlinkOp;
++}
+\ No newline at end of file
+diff --git a/src/hal/src/storage.c b/src/hal/src/storage.c
+index 222594d6..78d6978c 100644
+--- a/src/hal/src/storage.c
++++ b/src/hal/src/storage.c
+@@ -34,8 +34,10 @@
+ #include "FreeRTOS.h"
+ #include "semphr.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "i2cdev.h"
+ #include "eeprom.h"
++#endif
+ 
+ #include <string.h>
+ 
+@@ -110,14 +112,22 @@ static void flushEeprom(void)
+ {
+   // NOP for now, lets fix the EEPROM write first!
+ }
+-
++#ifndef CONFIG_PLATFORM_SITL
+ static kveMemory_t kve = {
+   .memorySize = KVE_PARTITION_LENGTH,
+   .read = readEeprom,
+   .write = writeEeprom,
+   .flush = flushEeprom,
+ };
+-
++#else
++// TODO: Can we implement persistent storage without EEPROM?
++static kveMemory_t kve = {
++  .memorySize = KVE_PARTITION_LENGTH,
++  .read = NULL,
++  .write = NULL,
++  .flush = NULL,
++};
++#endif
+ // Public API
+ 
+ static bool isInit = false;
+diff --git a/src/hal/src/syslink.c b/src/hal/src/syslink.c
+index 32350b36..88fbefac 100644
+--- a/src/hal/src/syslink.c
++++ b/src/hal/src/syslink.c
+@@ -36,7 +36,9 @@
+ #include "timers.h"
+ 
+ #include "config.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ #include "debug.h"
+ #include "syslink.h"
+ #include "radiolink.h"
+diff --git a/src/hal/src/usec_time_sitl.c b/src/hal/src/usec_time_sitl.c
+new file mode 100644
+index 00000000..cdc645d2
+--- /dev/null
++++ b/src/hal/src/usec_time_sitl.c
+@@ -0,0 +1,43 @@
++/*
++ *    ||          ____  _ __                           
++ * +------+      / __ )(_) /_______________ _____  ___ 
++ * | 0xBC |     / __  / / __/ ___/ ___/ __ `/_  / / _ \
++ * +------+    / /_/ / / /_/ /__/ /  / /_/ / / /_/  __/
++ *  ||  ||    /_____/_/\__/\___/_/   \__,_/ /___/\___/
++ *
++ * Crazyflie simulation firmware
++ *
++ * Copyright (c) 2018  Eric Goubault, Sylvie Putot, Franck Djeumou
++ *					   Cosynux , LIX , France
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, in version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ *
++ * usec_time.c - fake microsecond-resolution timer and timestamps on LINUX RTOS
++ */
++
++/* FreeRtos includes */
++#include "FreeRTOS.h"
++#include "task.h"
++
++#include "usec_time.h"
++
++void usecTimerInit(void)
++{
++  return ;
++}
++
++/* usecTimestamp just to be able to used crtp_commander_high_level module */
++uint64_t usecTimestamp(void)
++{
++  return (unsigned long) ((xTaskGetTickCount())*(1000000.0/configTICK_RATE_HZ)) ;
++}
+\ No newline at end of file
+diff --git a/src/init/main_sitl.c b/src/init/main_sitl.c
+new file mode 100644
+index 00000000..b8e5e939
+--- /dev/null
++++ b/src/init/main_sitl.c
+@@ -0,0 +1,119 @@
++/*
++ *    ||          ____  _ __                           
++ * +------+      / __ )(_) /_______________ _____  ___ 
++ * | 0xBC |     / __  / / __/ ___/ ___/ __ `/_  / / _ \
++ * +------+    / /_/ / / /_/ /__/ /  / /_/ / / /_/  __/
++ *  ||  ||    /_____/_/\__/\___/_/   \__,_/ /___/\___/
++ *
++ * Crazyflie simulation firmware
++ *
++ * Copyright (c) 2018  Eric Goubault, Sylvie Putot, Franck Djeumou
++ *             Cosynux , LIX , France
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, in version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ *
++ * main_sitl.c - Containing the main function.for the SITL simulation based on main.c
++ */
++
++
++
++/* Personal configs */
++#include "FreeRTOSConfig.h"
++
++/* FreeRtos includes */
++#include "FreeRTOS.h"
++#include "task.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <stdbool.h>
++
++/* Project includes */
++#include "socketlink.h"
++#include "config.h"
++#include "platform.h"
++#include "system.h"
++#include "usec_time.h"
++
++
++#define CRTP_PORT 19950
++char CRTP_SERVER_ADDRESS[] = "INADDR_ANY";
++
++/* Store the UDP port to communicate with CF */
++uint16_t crtp_port;
++/* Store an IP address or INADDR_ANY for the server (CF) */
++char* address_host;
++// /* Store the cf instance unique Identifiant */
++// uint8_t cf_id;
++
++int main(int argc, char **argv) 
++{
++
++  if (argc == 3){
++    crtp_port = atoi(argv[1]);
++    address_host = argv[2];
++    printf("address : %s , port : %d \n" , address_host , crtp_port );
++  } else if (argc == 2) {
++    // Initiaze socket parameters
++    crtp_port =  atoi(argv[1]);
++    address_host = CRTP_SERVER_ADDRESS;
++    printf("address : %s , port : %d \n" , address_host , crtp_port );
++  }else {
++    crtp_port =  CRTP_PORT;
++    address_host = CRTP_SERVER_ADDRESS;
++    printf("No port and ADDRESS selected ! 19950-INADDR_ANY selected as default\n");
++  }
++
++  //Initialize the platform.
++  int err = platformInit();
++  if (err != 0) {
++    // The firmware is running on the wrong hardware. Halt
++    while(1);
++  }
++
++  //Launch the system task that will initialize and start everything
++  systemLaunch();
++
++  //Start the FreeRTOS scheduler
++  vTaskStartScheduler();
++
++  //Should never reach this point!
++  while(1);
++
++  return 0;
++}
++
++/*
++* FreeRTOS assert name
++*/
++void vAssertCalled( unsigned long ulLine, const char * const pcFileName )
++{
++    printf("ASSERT: %s : %d\n", pcFileName, (int)ulLine);
++    while(1);
++}
++
++unsigned long ulGetRunTimeCounterValue(void)
++{
++    return 0;
++}
++
++void vConfigureTimerForRunTimeStats(void)
++{
++    return;
++}
++
++/* For memory management */
++void vApplicationMallocFailedHook(void)
++{
++    while(1);
++}
+\ No newline at end of file
+diff --git a/src/modules/interface/crtp.h b/src/modules/interface/crtp.h
+index 094bb906..1c7aaacb 100644
+--- a/src/modules/interface/crtp.h
++++ b/src/modules/interface/crtp.h
+@@ -47,6 +47,7 @@ typedef enum {
+   CRTP_PORT_LOCALIZATION     = 0x06,
+   CRTP_PORT_SETPOINT_GENERIC = 0x07,
+   CRTP_PORT_SETPOINT_HL      = 0x08,
++  CRTP_PORT_SETPOINT_SIM     = 0x09,
+   CRTP_PORT_PLATFORM         = 0x0D,
+   CRTP_PORT_LINK             = 0x0F,
+ } CRTPPort;
+diff --git a/src/modules/interface/crtp_localization_service.h b/src/modules/interface/crtp_localization_service.h
+index ef656482..96de6588 100644
+--- a/src/modules/interface/crtp_localization_service.h
++++ b/src/modules/interface/crtp_localization_service.h
+@@ -27,7 +27,9 @@
+ #define _CRTP_LOCALIZATION_SERVICE_H_
+ 
+ #include "stabilizer_types.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #ifdef CONFIG_DECK_LIGHTHOUSE
+ #include "pulse_processor.h"
+@@ -73,7 +75,10 @@ typedef enum
+ void locSrvInit(void);
+ 
+ // Send range in float. After 5 ranges it will send the packet.
+-void locSrvSendRangeFloat(uint8_t id, float range);
++#ifndef CONFIG_PLATFORM_SITL
++  void locSrvSendRangeFloat(uint8_t id, float range);
++#endif
++
+ #ifdef CONFIG_DECK_LIGHTHOUSE
+ void locSrvSendLighthouseAngle(int baseStation, pulseProcessorResult_t* angles);
+ #endif
+diff --git a/src/modules/interface/estimator/estimator.h b/src/modules/interface/estimator/estimator.h
+index 8d208b33..33b51a33 100644
+--- a/src/modules/interface/estimator/estimator.h
++++ b/src/modules/interface/estimator/estimator.h
+@@ -25,7 +25,9 @@
+  */
+ #pragma once
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ #include "stabilizer_types.h"
+ 
+ typedef enum {
+diff --git a/src/modules/interface/log.h b/src/modules/interface/log.h
+index 741f6312..34f2af92 100644
+--- a/src/modules/interface/log.h
++++ b/src/modules/interface/log.h
+@@ -120,6 +120,12 @@ struct log_s {
+   uint8_t type;
+   char * name;
+   void * address;
++    /*TODO: Need a better solution for this */
++  #if defined(ARCH_32) && defined(CONFIG_PLATFORM_SITL)
++    uint8_t useless[3];
++  #elif defined(ARCH_64) && defined(CONFIG_PLATFORM_SITL)
++    uint8_t useless[7];
++  #endif
+ };
+ 
+ /* Possible variable types */
+diff --git a/src/modules/interface/param.h b/src/modules/interface/param.h
+index ed18ee09..2acb14e6 100644
+--- a/src/modules/interface/param.h
++++ b/src/modules/interface/param.h
+@@ -39,6 +39,12 @@ struct param_s {
+   void * address;
+   void (*callback)(void);
+   void * (*getter)(void);
++  /*TODO: Need a better solution for this */
++  #if defined(ARCH_32) && defined(CONFIG_PLATFORM_SITL)
++    uint8_t useless[3];
++  #elif defined(ARCH_64) && defined(CONFIG_PLATFORM_SITL)
++    uint8_t useless[24];
++  #endif
+ };
+ 
+ typedef uint8_t * (*paramGetterUInt8)(void);
+diff --git a/src/modules/interface/power_distribution.h b/src/modules/interface/power_distribution.h
+index 945d734a..98f19c7b 100644
+--- a/src/modules/interface/power_distribution.h
++++ b/src/modules/interface/power_distribution.h
+@@ -69,4 +69,11 @@ uint16_t powerDistributionStopRatio(uint32_t id);
+  */
+ uint32_t powerDistributionGetIdleThrust();
+ 
++#ifdef CONFIG_PLATFORM_SITL
++#define NBR_OF_MOTORS 4
++void motorsSetRatio(const motors_thrust_pwm_t* motorPwm);
++
++uint16_t getMotorRatio(int id);
++#endif
++
+ #endif //__POWER_DISTRIBUTION_H__
+diff --git a/src/modules/interface/queuemonitor.h b/src/modules/interface/queuemonitor.h
+index b585d4c1..a43622b8 100644
+--- a/src/modules/interface/queuemonitor.h
++++ b/src/modules/interface/queuemonitor.h
+@@ -29,7 +29,9 @@
+ 
+ 
+ #include "FreeRTOS.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #ifdef CONFIG_DEBUG_QUEUE_MONITOR
+   #include "queue.h"
+diff --git a/src/modules/interface/static_mem.h b/src/modules/interface/static_mem.h
+index f371a5dd..af08d847 100644
+--- a/src/modules/interface/static_mem.h
++++ b/src/modules/interface/static_mem.h
+@@ -49,7 +49,7 @@
+  * end up in the CCM. The current implementation puts is in CCM but
+  * that might change later.
+  */
+-#if defined(UNIT_TEST_MODE)
++#if defined(UNIT_TEST_MODE) || defined(CONFIG_PLATFORM_SITL)
+   #define NO_DMA_CCM_SAFE_ZERO_INIT
+ #else
+   #define NO_DMA_CCM_SAFE_ZERO_INIT __attribute__((section(".ccmbss")))
+diff --git a/src/modules/src/app_handler.c b/src/modules/src/app_handler.c
+index ef4e4291..dc8cc2a7 100644
+--- a/src/modules/src/app_handler.c
++++ b/src/modules/src/app_handler.c
+@@ -24,7 +24,9 @@
+ 
+ #include <stdbool.h>
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #include "FreeRTOS.h"
+ #include "task.h"
+diff --git a/src/modules/src/comm.c b/src/modules/src/comm.c
+index 94e65d86..843180d2 100644
+--- a/src/modules/src/comm.c
++++ b/src/modules/src/comm.c
+@@ -33,10 +33,14 @@
+ #include "crtpservice.h"
+ #include "param_task.h"
+ #include "log.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "eskylink.h"
+ #include "uart_syslink.h"
+ #include "radiolink.h"
+ #include "usblink.h"
++#else
++#include "socketlink.h"
++#endif
+ #include "platformservice.h"
+ #include "syslink.h"
+ #include "crtp_localization_service.h"
+@@ -48,15 +52,21 @@ void commInit(void)
+   if (isInit)
+     return;
+ 
++  #ifndef CONFIG_PLATFORM_SITL
+   uartslkInit();
+   radiolinkInit();
++  #endif
+ 
+   /* These functions are moved to be initialized early so
+    * that DEBUG_PRINT can be used early */
+   // crtpInit();
+   // consoleInit();
+ 
++  #ifndef CONFIG_PLATFORM_SITL
+   crtpSetLink(radiolinkGetLink());
++  #else
++  crtpSetLink(socketlinkGetLink());
++  #endif
+ 
+   crtpserviceInit();
+   platformserviceInit();
+@@ -78,7 +88,9 @@ bool commTest(void)
+ {
+   bool pass=isInit;
+   
++  #ifndef CONFIG_PLATFORM_SITL
+   pass &= radiolinkTest();
++  #endif
+   pass &= crtpTest();
+   pass &= crtpserviceTest();
+   pass &= platformserviceTest();
+diff --git a/src/modules/src/console.c b/src/modules/src/console.c
+index 8433b7c0..1c1a3470 100644
+--- a/src/modules/src/console.c
++++ b/src/modules/src/console.c
+@@ -35,6 +35,7 @@
+ 
+ #ifdef STM32F40_41xxx
+ #include "stm32f4xx.h"
++#elif CONFIG_PLATFORM_SITL
+ #else
+ #include "stm32f10x.h"
+ #ifndef SCB_ICSR_VECTACTIVE_Msk
+@@ -91,8 +92,11 @@ bool consoleTest(void)
+ 
+ int consolePutchar(int ch)
+ {
++  #ifndef CONFIG_PLATFORM_SITL
+   bool isInInterrupt = (SCB->ICSR & SCB_ICSR_VECTACTIVE_Msk) != 0;
+-
++  #else
++  bool isInInterrupt = false;
++  #endif
+   if (!isInit) {
+     return 0;
+   }
+diff --git a/src/modules/src/controller/controller.c b/src/modules/src/controller/controller.c
+index 827511c8..ca32f506 100644
+--- a/src/modules/src/controller/controller.c
++++ b/src/modules/src/controller/controller.c
+@@ -8,7 +8,9 @@
+ #include "controller_indi.h"
+ #include "controller_brescianini.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #define DEFAULT_CONTROLLER ControllerTypePID
+ static ControllerType currentController = ControllerTypeAutoSelect;
+diff --git a/src/modules/src/cpx/cpx_uart_transport.c b/src/modules/src/cpx/cpx_uart_transport.c
+index 88cacf8a..fa4bd03a 100644
+--- a/src/modules/src/cpx/cpx_uart_transport.c
++++ b/src/modules/src/cpx/cpx_uart_transport.c
+@@ -50,7 +50,9 @@
+ #include "queue.h"
+ #include "stm32fxxx.h"
+ #include "system.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #include "cpx.h"
+ #include "cpx_uart_transport.h"
+diff --git a/src/modules/src/crtp_localization_service.c b/src/modules/src/crtp_localization_service.c
+index e26dc08e..f1d74164 100644
+--- a/src/modules/src/crtp_localization_service.c
++++ b/src/modules/src/crtp_localization_service.c
+@@ -38,13 +38,17 @@
+ #include "stabilizer.h"
+ #include "configblock.h"
+ #include "worker.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #ifdef CONFIG_DECK_LIGHTHOUSE
+ #include "lighthouse_storage.h"
+ #endif
+ 
++#ifdef CONFIG_DECK_LOCO
+ #include "locodeck.h"
++#endif
+ 
+ #include "estimator.h"
+ #include "quatcompress.h"
+@@ -118,8 +122,13 @@ static bool enableRangeStreamFloat = false;
+ static CRTPPacket LhAngle;
+ #endif
+ static bool enableLighthouseAngleStream = false;
++#ifdef CONFIG_PLATFORM_SITL
+ static float extPosStdDev = 0.01;
+-static float extQuatStdDev = 4.5e-3;
++static float extQuatStdDev = 0.5e-1;
++#else
++static float extPosStdDev = 0.01;
++static float extQuatStdDev = 0.06;
++#endif
+ static bool isInit = false;
+ static uint8_t my_id;
+ static uint16_t tickOfLastPacket; // tick when last packet was received
+diff --git a/src/modules/src/estimator/estimator.c b/src/modules/src/estimator/estimator.c
+index 3e7899b9..86d265cf 100644
+--- a/src/modules/src/estimator/estimator.c
++++ b/src/modules/src/estimator/estimator.c
+@@ -1,4 +1,6 @@
++#ifndef CONFIG_PLATFORM_SITL
+ #include "stm32fxxx.h"
++#endif
+ #include "FreeRTOS.h"
+ #include "queue.h"
+ #include "static_mem.h"
+@@ -118,7 +120,7 @@ void stateEstimatorSwitchTo(StateEstimatorType estimator) {
+ 
+   #if defined(CONFIG_ESTIMATOR_KALMAN)
+     #define ESTIMATOR StateEstimatorTypeKalman
+-  #elif defined(CONFIG_UKF_KALMAN)
++  #elif defined(CONFIG_ESTIMATOR_UKF)
+     #define ESTIMATOR StateEstimatorTypeUkf
+   #elif defined(CONFIG_ESTIMATOR_COMPLEMENTARY)
+     #define ESTIMATOR StateEstimatorTypeComplementary
+@@ -175,7 +177,11 @@ void estimatorEnqueue(const measurement_t *measurement) {
+   }
+ 
+   portBASE_TYPE result;
++  #ifndef CONFIG_PLATFORM_SITL
+   bool isInInterrupt = (SCB->ICSR & SCB_ICSR_VECTACTIVE_Msk) != 0;
++  #else
++  bool isInInterrupt = false;
++  #endif
+   if (isInInterrupt) {
+     portBASE_TYPE xHigherPriorityTaskWoken = pdFALSE;
+     result = xQueueSendFromISR(measurementsQueue, measurement, &xHigherPriorityTaskWoken);
+diff --git a/src/modules/src/estimator/estimator_complementary.c b/src/modules/src/estimator/estimator_complementary.c
+index d6ed9e6a..94c7255e 100644
+--- a/src/modules/src/estimator/estimator_complementary.c
++++ b/src/modules/src/estimator/estimator_complementary.c
+@@ -25,7 +25,9 @@
+  * estimator_complementary.c - a complementary estimator
+  */
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "stm32f4xx.h"
++#endif
+ 
+ #include "FreeRTOS.h"
+ #include "queue.h"
+diff --git a/src/modules/src/estimator/estimator_kalman.c b/src/modules/src/estimator/estimator_kalman.c
+index b7cad4d2..079f490a 100644
+--- a/src/modules/src/estimator/estimator_kalman.c
++++ b/src/modules/src/estimator/estimator_kalman.c
+@@ -230,6 +230,7 @@ static void kalmanTask(void* parameters) {
+   #endif
+ 
+     // Run the system dynamics to predict the state forward.
++    // if (accSubSampler.count > 0 && gyroSubSampler.count > 0) {
+     if (nowMs >= nextPredictionMs) {
+       axis3fSubSamplerFinalize(&accSubSampler);
+       axis3fSubSamplerFinalize(&gyroSubSampler);
+@@ -240,7 +241,7 @@ static void kalmanTask(void* parameters) {
+       STATS_CNT_RATE_EVENT(&predictionCounter);
+ 
+       if (!rateSupervisorValidate(&rateSupervisorContext, nowMs)) {
+-        DEBUG_PRINT("WARNING: Kalman prediction rate off (%lu)\n", rateSupervisorLatestCount(&rateSupervisorContext));
++        DEBUG_PRINT("WARNING: Kalman prediction rate off (%lu)\n", (unsigned long)rateSupervisorLatestCount(&rateSupervisorContext));
+       }
+     }
+ 
+@@ -299,8 +300,12 @@ static void updateQueuedMeasurements(const uint32_t nowMs, const bool quadIsFlyi
+     switch (m.type) {
+       case MeasurementTypeTDOA:
+         if(robustTdoa){
++          #ifndef CONFIG_PLATFORM_SITL
+           // robust KF update with TDOA measurements
+           kalmanCoreRobustUpdateWithTdoa(&coreData, &m.data.tdoa, &outlierFilterTdoaState);
++          #else
++          DEBUG_PRINT("Robust TDOA not supported in SITL\n");
++          #endif
+         }else{
+           // standard KF update
+           kalmanCoreUpdateWithTdoa(&coreData, &m.data.tdoa, nowMs, &outlierFilterTdoaState);
+@@ -314,8 +319,12 @@ static void updateQueuedMeasurements(const uint32_t nowMs, const bool quadIsFlyi
+         break;
+       case MeasurementTypeDistance:
+         if(robustTwr){
++            #ifndef CONFIG_PLATFORM_SITL
+             // robust KF update with UWB TWR measurements
+             kalmanCoreRobustUpdateWithDistance(&coreData, &m.data.distance);
++            #else
++            DEBUG_PRINT("Robust TWR not supported in SITL\n");
++            #endif
+         }else{
+             // standard KF update
+             kalmanCoreUpdateWithDistance(&coreData, &m.data.distance);
+diff --git a/src/modules/src/estimator/estimator_ukf.c b/src/modules/src/estimator/estimator_ukf.c
+index 7ac20a30..18d67d08 100644
+--- a/src/modules/src/estimator/estimator_ukf.c
++++ b/src/modules/src/estimator/estimator_ukf.c
+@@ -54,7 +54,9 @@
+ #include "estimator.h"
+ #include "kalman_supervisor.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "stm32f4xx.h"
++#endif
+ 
+ #include "FreeRTOS.h"
+ #include "queue.h"
+diff --git a/src/modules/src/estimator/position_estimator_altitude.c b/src/modules/src/estimator/position_estimator_altitude.c
+index 49c7619f..796fcc50 100644
+--- a/src/modules/src/estimator/position_estimator_altitude.c
++++ b/src/modules/src/estimator/position_estimator_altitude.c
+@@ -24,7 +24,9 @@
+  * position_estimator_altitude.c: Altitude-only position estimator
+  */
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "stm32f4xx.h"
++#endif
+ 
+ #include "FreeRTOS.h"
+ #include "task.h"
+diff --git a/src/modules/src/health.c b/src/modules/src/health.c
+index d9ad7efa..df10d07c 100644
+--- a/src/modules/src/health.c
++++ b/src/modules/src/health.c
+@@ -44,7 +44,9 @@
+ #include "motors.h"
+ #include "sensors.h"
+ #include "pm.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #include "static_mem.h"
+ 
+diff --git a/src/modules/src/kalman_core/kalman_core.c b/src/modules/src/kalman_core/kalman_core.c
+index 758f47ab..aef19e7d 100644
+--- a/src/modules/src/kalman_core/kalman_core.c
++++ b/src/modules/src/kalman_core/kalman_core.c
+@@ -57,7 +57,9 @@
+ 
+ #include "kalman_core.h"
+ #include "cfassert.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #include "physicalConstants.h"
+ 
+diff --git a/src/modules/src/lighthouse/lighthouse_core.c b/src/modules/src/lighthouse/lighthouse_core.c
+index 6db65c40..74adfe21 100644
+--- a/src/modules/src/lighthouse/lighthouse_core.c
++++ b/src/modules/src/lighthouse/lighthouse_core.c
+@@ -35,7 +35,9 @@
+ 
+ #include "system.h"
+ #include "param.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ // Uncomment next line to add extra debug log variables
+ // #define CONFIG_DEBUG_LOG_ENABLE 1
+diff --git a/src/modules/src/lighthouse/lighthouse_position_est.c b/src/modules/src/lighthouse/lighthouse_position_est.c
+index 584ad5f2..86d0549f 100644
+--- a/src/modules/src/lighthouse/lighthouse_position_est.c
++++ b/src/modules/src/lighthouse/lighthouse_position_est.c
+@@ -35,7 +35,9 @@
+ #include "param.h"
+ #include "statsCnt.h"
+ #include "mem.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #include "lighthouse_position_est.h"
+ #include "lighthouse_geometry.h"
+diff --git a/src/modules/src/lighthouse/lighthouse_storage.c b/src/modules/src/lighthouse/lighthouse_storage.c
+index cac88338..e3e393d2 100644
+--- a/src/modules/src/lighthouse/lighthouse_storage.c
++++ b/src/modules/src/lighthouse/lighthouse_storage.c
+@@ -38,7 +38,9 @@
+ #define DEBUG_MODULE "LH_STORE"
+ #include "debug.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ // Persistent storage
+ #define STORAGE_VERSION_KEY "lh/ver"
+diff --git a/src/modules/src/log.c b/src/modules/src/log.c
+index 0442d61f..aac5f27f 100644
+--- a/src/modules/src/log.c
++++ b/src/modules/src/log.c
+@@ -896,7 +896,7 @@ void logRunBlock(void * arg)
+       if (blk->droppedPackets++ % 100 == 0)
+       {
+         DEBUG_PRINT("WARNING: LOG packets drop detected (%lu packets lost)\n",
+-                    blk->droppedPackets);
++                     (unsigned long)blk->droppedPackets);
+       }
+     }
+   }
+diff --git a/src/modules/src/mem.c b/src/modules/src/mem.c
+index 912f2c0c..7042aa13 100644
+--- a/src/modules/src/mem.c
++++ b/src/modules/src/mem.c
+@@ -73,9 +73,11 @@ bool memTest(void) {
+     return false;
+   }
+ 
++  #ifndef CONFIG_PLATFORM_SITL
+   if (owMemHandler == 0) {
+     return false;
+   }
++  #endif
+ 
+   return true;
+ }
+diff --git a/src/modules/src/msp.c b/src/modules/src/msp.c
+index 2ba5c218..e198303c 100644
+--- a/src/modules/src/msp.c
++++ b/src/modules/src/msp.c
+@@ -35,7 +35,9 @@
+ #include "sensfusion6.h"
+ #include "commander.h"
+ #include "version.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "motors.h"
++#endif
+ #include "string.h"
+ #include "platform.h"
+ #include "param.h"
+@@ -146,21 +148,24 @@ typedef struct _MspUid
+   uint32_t uid[3];
+ }__attribute__((packed)) MspUid;
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ typedef struct _MspSet4WayIf
+ {
+   uint8_t connectedEscs;
+ }__attribute__((packed)) MspSet4WayIf;
++#endif
+ 
+ typedef struct _MspFeatures
+ {
+   uint32_t featureBits;
+ }__attribute__((packed)) MspFeatures;
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ typedef struct _MspMotors
+ {
+   uint16_t data[NBR_OF_MOTORS];
+ }__attribute__((packed)) MspMotors;
+-
++#endif
+ typedef struct _MspBatteryState
+ {
+   uint8_t cellCount;
+@@ -179,9 +184,10 @@ typedef struct _MspSetMotors
+ }__attribute__((packed)) MspSetMotors;
+ 
+ static bool hasSet4WayIf = false;
++#ifndef CONFIG_PLATFORM_SITL
+ static paramVarId_t motorPowerSetEnableParam;
+ static paramVarId_t motorParams[NBR_OF_MOTORS];
+-
++#endif
+ // Helpers
+ static uint8_t mspComputeCrc(const MspHeader* header, const uint8_t* data, const uint16_t dataLen);
+ static bool mspIsRequestValid(MspObject* pMspObject);
+@@ -197,11 +203,13 @@ static void mspHandleRequestMspBoxIds(MspObject* pMspObject);
+ static void mspHandleRequestsApiVersion(MspObject* pMspObject);
+ static void mspHandleRequestsFcVariant(MspObject* pMspObject);
+ static void mspHandleRequestsFcVersion(MspObject* pMspObject);
+-static void mspHandleRequestsBoardInfo(MspObject* pMspObject);
+ static void mspHandleRequestsBuildInfo(MspObject* pMspObject);
+ static void mspHandleRequestsUiid(MspObject* pMspObject);
++#ifndef CONFIG_PLATFORM_SITL
++static void mspHandleRequestsBoardInfo(MspObject* pMspObject);
+ static void mspHandleRequestsSet4WayIf(MspObject* pMspObject);
+ static void mspHandleRequestMotor(MspObject* pMspObject);
++#endif
+ static void mspHandleRequestFeaturesConfig(MspObject* pMspObject);
+ static void mspHandleRequestBatteryState(MspObject* pMspObject);
+ static void mspHandleRequestSetMotor(MspObject* pMspObject);
+@@ -212,11 +220,13 @@ void mspInit(MspObject* pMspObject, const MspResponseCallback callback)
+   pMspObject->requestState = MSP_REQUEST_STATE_WAIT_FOR_START;
+   pMspObject->responseCallback = callback;
+   // Get params from internal parameter API, which we need to enable and set the motor PWM.
++  #ifndef CONFIG_PLATFORM_SITL
+   motorPowerSetEnableParam = paramGetVarId("motorPowerSet", "enable");
+   motorParams[0] = paramGetVarId("motorPowerSet", "m1");
+   motorParams[1] = paramGetVarId("motorPowerSet", "m2");
+   motorParams[2] = paramGetVarId("motorPowerSet", "m3");
+   motorParams[3] = paramGetVarId("motorPowerSet", "m4");
++  #endif
+ }
+ 
+ void mspProcessByte(MspObject* pMspObject, const uint8_t data)
+@@ -372,31 +382,39 @@ static void mspProcessRequest(MspObject* pMspObject)
+     case MSP_FC_VERSION:
+       mspHandleRequestsFcVersion(pMspObject);
+       break;
++    #ifndef CONFIG_PLATFORM_SITL
+     case MSP_BOARD_INFO:
+       mspHandleRequestsBoardInfo(pMspObject);
+       break;
++    #endif
+     case MSP_BUILD_INFO:
+       mspHandleRequestsBuildInfo(pMspObject);
+       break;
+     case MSP_UID:
+       mspHandleRequestsUiid(pMspObject);
+       break;
++    #ifndef CONFIG_PLATFORM_SITL
+     case MSP_SET_4WAY_IF:
+       mspHandleRequestsSet4WayIf(pMspObject);
+       hasSet4WayIf = true;
+       break;
++    #endif
++    #ifndef CONFIG_PLATFORM_SITL
+     case MSP_MOTOR:
+       mspHandleRequestMotor(pMspObject);
+       break;
++    #endif
+     case MSP_FEATURE_CONFIG:
+       mspHandleRequestFeaturesConfig(pMspObject);
+       break;
+     case MSP_BATTERY_STATE:
+       mspHandleRequestBatteryState(pMspObject);
+       break;
++    #ifndef CONFIG_PLATFORM_SITL
+     case MSP_SET_MOTOR:
+       mspHandleRequestSetMotor(pMspObject);
+       break;
++    #endif
+     default:
+       DEBUG_PRINT("Received unsupported MSP request: %d\n", pMspObject->requestHeader.command);
+       return;
+@@ -494,7 +512,7 @@ static void mspHandleRequestsFcVersion(MspObject* pMspObject)
+   fcVersion->version[2] = 0;
+   mspMakeTxPacket(pMspObject, MSP_FC_VERSION, (uint8_t*) fcVersion, sizeof(MspFcVersion));
+ }
+-
++#ifndef CONFIG_PLATFORM_SITL
+ static void mspHandleRequestsBoardInfo(MspObject* pMspObject)
+ {
+   MspBoardInfo* boardInfo = (MspBoardInfo*)(pMspObject->mspResponse + sizeof(MspHeader));
+@@ -503,7 +521,7 @@ static void mspHandleRequestsBoardInfo(MspObject* pMspObject)
+   boardInfo->board_version[1] = 1;
+   mspMakeTxPacket(pMspObject, MSP_BOARD_INFO, (uint8_t*) boardInfo, sizeof(MspBoardInfo));
+ }
+-
++#endif
+ static void mspHandleRequestsBuildInfo(MspObject* pMspObject)
+ {
+   MspBuildInfo* buildInfo = (MspBuildInfo*)(pMspObject->mspResponse + sizeof(MspHeader));
+@@ -520,14 +538,15 @@ static void mspHandleRequestsUiid(MspObject* pMspObject)
+   uuid->uid[2] = *((int*)(MCU_ID_ADDRESS+0));
+   mspMakeTxPacket(pMspObject, MSP_UID, (uint8_t*) uuid, sizeof(MspUid));
+ }
+-
++#ifndef CONFIG_PLATFORM_SITL
+ static void mspHandleRequestsSet4WayIf(MspObject* pMspObject)
+ {
+   MspSet4WayIf* set4WayIf = (MspSet4WayIf*)(pMspObject->mspResponse + sizeof(MspHeader));
+   set4WayIf->connectedEscs = NBR_OF_MOTORS;
+   mspMakeTxPacket(pMspObject, MSP_SET_4WAY_IF, (uint8_t*) set4WayIf, sizeof(MspSet4WayIf));
+ }
+-
++#endif
++#ifndef CONFIG_PLATFORM_SITL
+ static void mspHandleRequestMotor(MspObject* pMspObject)
+ {
+   MspMotors* motorData = (MspMotors*)(pMspObject->mspResponse + sizeof(MspHeader));
+@@ -537,7 +556,7 @@ static void mspHandleRequestMotor(MspObject* pMspObject)
+   }
+   mspMakeTxPacket(pMspObject, MSP_MOTOR, (uint8_t*) motorData, sizeof(MspMotors));
+ }
+-
++#endif
+ static void mspHandleRequestFeaturesConfig(MspObject* pMspObject)
+ {
+   MspFeatures* features = (MspFeatures*)(pMspObject->mspResponse + sizeof(MspHeader));
+@@ -558,7 +577,7 @@ static void mspHandleRequestBatteryState(MspObject* pMspObject)
+   batteryState->voltage2 = 0;
+   mspMakeTxPacket(pMspObject, MSP_BATTERY_STATE, (uint8_t*) batteryState, sizeof(MspBatteryState));
+ }
+-
++#ifndef CONFIG_PLATFORM_SITL
+ static void mspHandleRequestSetMotor(MspObject* pMspObject)
+ {
+   // Ensure that the motorPowerSet functionality is first enabled
+@@ -573,7 +592,7 @@ static void mspHandleRequestSetMotor(MspObject* pMspObject)
+ 
+   mspMakeTxPacket(pMspObject, MSP_SET_MOTOR, 0, 0);
+ }
+-
++#endif
+ /*
+  * Maps the motorSpeed from a value between 1000 and 2000 to
+  * a value between 0 and 65535.
+diff --git a/src/modules/src/param_logic.c b/src/modules/src/param_logic.c
+index e7b4e1d4..efd0b44d 100644
+--- a/src/modules/src/param_logic.c
++++ b/src/modules/src/param_logic.c
+@@ -29,11 +29,13 @@
+ #include "config.h"
+ #include "FreeRTOS.h"
+ #include "param_logic.h"
+-#include "storage.h"
+ #include "crc32.h"
+ #include "debug.h"
+ #include "cfassert.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#include "storage.h"
++#endif
+ 
+ #if 0
+ #define PARAM_DEBUG(fmt, ...) DEBUG_PRINT("D/param " fmt, ## __VA_ARGS__)
+diff --git a/src/modules/src/param_task.c b/src/modules/src/param_task.c
+index 519350bd..2a1aa0a8 100644
+--- a/src/modules/src/param_task.c
++++ b/src/modules/src/param_task.c
+@@ -60,7 +60,7 @@ void paramInit(void)
+   }
+ 
+   paramLogicInit();
+-  paramLogicStorageInit();
++  //paramLogicStorageInit();
+ 
+   //Start the param task
+   STATIC_MEM_TASK_CREATE(paramTask, paramTask, PARAM_TASK_NAME, NULL, PARAM_TASK_PRI);
+@@ -94,6 +94,9 @@ void paramTask(void * prm)
+         case MISC_GET_EXTENDED_TYPE:
+           paramGetExtendedType(&p);
+           break;
++        case MISC_GET_DEFAULT_VALUE:
++          paramGetDefaultValue(&p);
++          break;
+         case MISC_PERSISTENT_STORE:
+           paramPersistentStore(&p);
+           break;
+@@ -103,9 +106,6 @@ void paramTask(void * prm)
+         case MISC_PERSISTENT_CLEAR:
+           paramPersistentClear(&p);
+           break;
+-        case MISC_GET_DEFAULT_VALUE:
+-          paramGetDefaultValue(&p);
+-          break;
+         default:
+           break;
+       }
+diff --git a/src/modules/src/platformservice.c b/src/modules/src/platformservice.c
+index 9a9972a8..90b117f3 100644
+--- a/src/modules/src/platformservice.c
++++ b/src/modules/src/platformservice.c
+@@ -35,7 +35,9 @@
+ #include "config.h"
+ #include "crtp.h"
+ #include "platformservice.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "syslink.h"
++#endif
+ #include "version.h"
+ #include "platform.h"
+ #include "app_channel.h"
+@@ -114,6 +116,9 @@ static void platformSrvTask(void* prm)
+ 
+ static void platformCommandProcess(CRTPPacket *p)
+ {
++  #ifdef CONFIG_PLATFORM_SITL
++    return;
++  #else
+   uint8_t command = p->data[0];
+   uint8_t *data = &p->data[1];
+ 
+@@ -147,6 +152,7 @@ static void platformCommandProcess(CRTPPacket *p)
+     default:
+       break;
+   }
++  #endif
+ }
+ 
+ int platformserviceSendAppchannelPacket(CRTPPacket *p)
+@@ -176,6 +182,7 @@ static void versionCommandProcess(CRTPPacket *p)
+       p->size = (strlen(V_STAG)>CRTP_MAX_DATA_SIZE-1)?CRTP_MAX_DATA_SIZE:strlen(V_STAG)+1;
+       crtpSendPacketBlock(p);
+       break;
++    #ifndef CONFIG_PLATFORM_SITL
+     case getDeviceTypeName:
+       {
+       const char* name = platformConfigGetDeviceTypeName();
+@@ -184,6 +191,7 @@ static void versionCommandProcess(CRTPPacket *p)
+       crtpSendPacketBlock(p);
+       }
+       break;
++    #endif
+     default:
+       break;
+   }
+diff --git a/src/modules/src/power_distribution_flapper.c b/src/modules/src/power_distribution_flapper.c
+index 98529703..bb0774c8 100644
+--- a/src/modules/src/power_distribution_flapper.c
++++ b/src/modules/src/power_distribution_flapper.c
+@@ -31,7 +31,9 @@
+ #include "log.h"
+ #include "param.h"
+ #include "num.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ #include "config.h"
+ 
+ #include "debug.h"
+diff --git a/src/modules/src/power_distribution_quadrotor.c b/src/modules/src/power_distribution_quadrotor.c
+index 0f3a9d04..de762331 100644
+--- a/src/modules/src/power_distribution_quadrotor.c
++++ b/src/modules/src/power_distribution_quadrotor.c
+@@ -30,7 +30,9 @@
+ #include "log.h"
+ #include "param.h"
+ #include "num.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ #include "config.h"
+ #include "math.h"
+ #include "platform_defaults.h"
+diff --git a/src/modules/src/power_distribution_sitl.c b/src/modules/src/power_distribution_sitl.c
+new file mode 100644
+index 00000000..f9fe7e88
+--- /dev/null
++++ b/src/modules/src/power_distribution_sitl.c
+@@ -0,0 +1,272 @@
++/**
++ *    ||          ____  _ __
++ * +------+      / __ )(_) /_______________ _____  ___
++ * | 0xBC |     / __  / / __/ ___/ ___/ __ `/_  / / _ \
++ * +------+    / /_/ / / /_/ /__/ /  / /_/ / / /_/  __/
++ *  ||  ||    /_____/_/\__/\___/_/   \__,_/ /___/\___/
++ *
++ * Crazyflie control firmware
++ *
++ * Copyright (C) 2011-2022 Bitcraze AB
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, in version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ *
++ * power_distribution_quadrotor.c - Crazyflie stock power distribution code
++ */
++
++#include "FreeRTOS.h"
++#include "task.h"
++
++#include "power_distribution.h"
++
++#include <string.h>
++#include "log.h"
++#include "param.h"
++#include "num.h"
++
++#ifndef CONFIG_PLATFORM_SITL
++#include "autoconf.h"
++#endif
++
++#include "config.h"
++#include "math.h"
++
++#include "crtp.h"
++
++#include "debug.h"
++
++#ifndef CONFIG_MOTORS_DEFAULT_IDLE_THRUST
++#  define DEFAULT_IDLE_THRUST 0
++#else
++#  define DEFAULT_IDLE_THRUST CONFIG_MOTORS_DEFAULT_IDLE_THRUST
++#endif
++
++
++static struct {
++  uint16_t m1;
++  uint16_t m2;
++  uint16_t m3;
++  uint16_t m4;
++} __attribute__((packed)) motorPower;
++
++static uint32_t lastSentTime = 0;
++static CRTPPacket p;
++
++static uint32_t idleThrust = DEFAULT_IDLE_THRUST;
++static float armLength = 0.046f; // m;
++static float thrustToTorque = 0.005964552f;
++
++// thrust = a * pwm^2 + b * pwm
++static float pwmToThrustA = 0.091492681f;
++static float pwmToThrustB = 0.067673604f;
++
++int powerDistributionMotorType(uint32_t id)
++{
++  return 1;
++}
++
++uint16_t powerDistributionStopRatio(uint32_t id)
++{
++  return 0;
++}
++
++void powerDistributionInit(void)
++{
++  lastSentTime = xTaskGetTickCount();
++  p.size = 4 * sizeof(uint16_t);
++  p.header = CRTP_HEADER(CRTP_PORT_SETPOINT_SIM, 0);
++}
++
++bool powerDistributionTest(void)
++{
++  bool pass = true;
++  return pass;
++}
++
++static uint16_t capMinThrust(float thrust, uint32_t minThrust) {
++  if (thrust < minThrust) {
++    return minThrust;
++  }
++
++  return thrust;
++}
++
++static void powerDistributionLegacy(const control_t *control, motors_thrust_uncapped_t* motorThrustUncapped)
++{
++  int16_t r = control->roll / 2.0f;
++  int16_t p = control->pitch / 2.0f;
++
++  motorThrustUncapped->motors.m1 = control->thrust - r + p + control->yaw;
++  motorThrustUncapped->motors.m2 = control->thrust - r - p - control->yaw;
++  motorThrustUncapped->motors.m3 = control->thrust + r - p + control->yaw;
++  motorThrustUncapped->motors.m4 = control->thrust + r + p - control->yaw;
++}
++
++static void powerDistributionForceTorque(const control_t *control, motors_thrust_uncapped_t* motorThrustUncapped) {
++  static float motorForces[STABILIZER_NR_OF_MOTORS];
++
++  const float arm = 0.707106781f * armLength;
++  const float rollPart = 0.25f / arm * control->torqueX;
++  const float pitchPart = 0.25f / arm * control->torqueY;
++  const float thrustPart = 0.25f * control->thrustSi; // N (per rotor)
++  const float yawPart = 0.25f * control->torqueZ / thrustToTorque;
++
++  motorForces[0] = thrustPart - rollPart - pitchPart - yawPart;
++  motorForces[1] = thrustPart - rollPart + pitchPart + yawPart;
++  motorForces[2] = thrustPart + rollPart + pitchPart - yawPart;
++  motorForces[3] = thrustPart + rollPart - pitchPart + yawPart;
++
++  for (int motorIndex = 0; motorIndex < STABILIZER_NR_OF_MOTORS; motorIndex++) {
++    float motorForce = motorForces[motorIndex];
++    if (motorForce < 0.0f) {
++      motorForce = 0.0f;
++    }
++
++    float motor_pwm = (-pwmToThrustB + sqrtf(pwmToThrustB * pwmToThrustB + 4.0f * pwmToThrustA * motorForce)) / (2.0f * pwmToThrustA);
++    motorThrustUncapped->list[motorIndex] = motor_pwm * UINT16_MAX;
++  }
++}
++
++static void powerDistributionForce(const control_t *control, motors_thrust_uncapped_t* motorThrustUncapped) {
++  // Not implemented yet
++}
++
++void powerDistribution(const control_t *control, motors_thrust_uncapped_t* motorThrustUncapped)
++{
++  switch (control->controlMode) {
++    case controlModeLegacy:
++      powerDistributionLegacy(control, motorThrustUncapped);
++      break;
++    case controlModeForceTorque:
++      powerDistributionForceTorque(control, motorThrustUncapped);
++      break;
++    case controlModeForce:
++      powerDistributionForce(control, motorThrustUncapped);
++      break;
++    default:
++      // Nothing here
++      break;
++  }
++}
++
++bool powerDistributionCap(const motors_thrust_uncapped_t* motorThrustBatCompUncapped, motors_thrust_pwm_t* motorPwm)
++{
++  const int32_t maxAllowedThrust = UINT16_MAX;
++  bool isCapped = false;
++
++  // Find highest thrust
++  int32_t highestThrustFound = 0;
++  for (int motorIndex = 0; motorIndex < STABILIZER_NR_OF_MOTORS; motorIndex++)
++  {
++    const int32_t thrust = motorThrustBatCompUncapped->list[motorIndex];
++    if (thrust > highestThrustFound)
++    {
++      highestThrustFound = thrust;
++    }
++  }
++
++  int32_t reduction = 0;
++  if (highestThrustFound > maxAllowedThrust)
++  {
++    reduction = highestThrustFound - maxAllowedThrust;
++    isCapped = true;
++  }
++
++  for (int motorIndex = 0; motorIndex < STABILIZER_NR_OF_MOTORS; motorIndex++)
++  {
++    int32_t thrustCappedUpper = motorThrustBatCompUncapped->list[motorIndex] - reduction;
++    motorPwm->list[motorIndex] = capMinThrust(thrustCappedUpper, idleThrust);
++  }
++
++  return isCapped;
++}
++
++uint32_t powerDistributionGetIdleThrust() {
++  return idleThrust;
++}
++
++uint16_t getMotorRatio(int id)
++{
++  switch (id) {
++    case 0: return motorPower.m1;
++    case 1: return motorPower.m2;
++    case 2: return motorPower.m3;
++    case 3: return motorPower.m4;
++  }
++}
++void motorsSetRatio(const motors_thrust_pwm_t* motorPwm)
++{
++  motorPower.m1 = motorPwm->motors.m1;
++  motorPower.m2 = motorPwm->motors.m2;
++  motorPower.m3 = motorPwm->motors.m3;
++  motorPower.m4 = motorPwm->motors.m4;
++
++  if (xTaskGetTickCount() - lastSentTime >= M2T(1)){
++    memcpy(p.data , (uint8_t *) &motorPower , p.size);
++    crtpSendPacket(&p);
++    lastSentTime = xTaskGetTickCount();
++  }
++  // DEBUG_PRINT("%d , %d , %d , %d  \n", (int) motorPower.m1 , (int) motorPower.m2 , (int) motorPower.m3 , (int) motorPower.m4 );
++}
++/**
++ * Power distribution parameters
++ */
++PARAM_GROUP_START(powerDist)
++/**
++ * @brief Motor thrust to set at idle (default: 0)
++ *
++ * This is often needed for brushless motors as
++ * it takes time to start up the motor. Then a
++ * common value is between 3000 - 6000.
++ */
++PARAM_ADD_CORE(PARAM_UINT32 | PARAM_PERSISTENT, idleThrust, &idleThrust)
++PARAM_GROUP_STOP(powerDist)
++
++/**
++ * System identification parameters for quad rotor
++ */
++PARAM_GROUP_START(quadSysId)
++
++PARAM_ADD(PARAM_FLOAT, thrustToTorque, &thrustToTorque)
++PARAM_ADD(PARAM_FLOAT, pwmToThrustA, &pwmToThrustA)
++PARAM_ADD(PARAM_FLOAT, pwmToThrustB, &pwmToThrustB)
++
++/**
++ * @brief Length of arms (m)
++ *
++ * The distance from the center to a motor
++ */
++PARAM_ADD(PARAM_FLOAT, armLength, &armLength)
++PARAM_GROUP_STOP(quadSysId)
++
++/**
++ * Motor output related log variables.
++ */
++LOG_GROUP_START(motor)
++/**
++ * @brief Motor power (PWM value) for M1 [0 - UINT16_MAX]
++ */
++LOG_ADD_CORE(LOG_UINT16, m1, &motorPower.m1)
++/**
++ * @brief Motor power (PWM value) for M2 [0 - UINT16_MAX]
++ */
++LOG_ADD_CORE(LOG_UINT16, m2, &motorPower.m2)
++/**
++ * @brief Motor power (PWM value) for M3 [0 - UINT16_MAX]
++ */
++LOG_ADD_CORE(LOG_UINT16, m3, &motorPower.m3)
++/**
++ * @brief Motor power (PWM value) for M4 [0 - UINT16_MAX]
++ */
++LOG_ADD_CORE(LOG_UINT16, m4, &motorPower.m4)
++LOG_GROUP_STOP(motor)
+\ No newline at end of file
+diff --git a/src/modules/src/sensfusion6.c b/src/modules/src/sensfusion6.c
+index a88456c7..8000cdf5 100644
+--- a/src/modules/src/sensfusion6.c
++++ b/src/modules/src/sensfusion6.c
+@@ -30,7 +30,9 @@
+ #include "param.h"
+ #include "physicalConstants.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #ifdef CONFIG_IMU_MADGWICK_QUATERNION
+   #define BETA_DEF     0.01f    // 2 * proportional gain
+diff --git a/src/modules/src/stabilizer.c b/src/modules/src/stabilizer.c
+index 49d4fd1a..23a38a8e 100644
+--- a/src/modules/src/stabilizer.c
++++ b/src/modules/src/stabilizer.c
+@@ -34,8 +34,10 @@
+ #include "log.h"
+ #include "param.h"
+ #include "debug.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "motors.h"
+ #include "pm.h"
++#endif
+ #include "platform.h"
+ 
+ #include "stabilizer.h"
+@@ -51,7 +53,7 @@
+ #include "supervisor.h"
+ 
+ #include "estimator.h"
+-#include "usddeck.h"
++//#include "usddeck.h"
+ #include "quatcompress.h"
+ #include "statsCnt.h"
+ #include "static_mem.h"
+@@ -178,8 +180,10 @@ void stabilizerInit(StateEstimatorType estimator)
+   stateEstimatorInit(estimator);
+   controllerInit(ControllerTypeAutoSelect);
+   powerDistributionInit();
++  #ifndef CONFIG_PLATFORM_SITL
+   motorsInit(platformConfigGetMotorMapping());
+   collisionAvoidanceInit();
++  #endif
+   estimatorType = stateEstimatorGetType();
+   controllerType = controllerGetType();
+ 
+@@ -196,28 +200,34 @@ bool stabilizerTest(void)
+   pass &= stateEstimatorTest();
+   pass &= controllerTest();
+   pass &= powerDistributionTest();
++  #ifndef CONFIG_PLATFORM_SITL
+   pass &= motorsTest();
+   pass &= collisionAvoidanceTest();
+-
++  #endif
+   return pass;
+ }
+ 
+ static void batteryCompensation(const motors_thrust_uncapped_t* motorThrustUncapped, motors_thrust_uncapped_t* motorThrustBatCompUncapped)
+ {
++  #ifndef CONFIG_PLATFORM_SITL
+   float supplyVoltage = pmGetBatteryVoltage();
+ 
+   for (int motor = 0; motor < STABILIZER_NR_OF_MOTORS; motor++)
+   {
+     motorThrustBatCompUncapped->list[motor] = motorsCompensateBatteryVoltage(motor, motorThrustUncapped->list[motor], supplyVoltage);
+   }
++  #endif
+ }
+-
+ static void setMotorRatios(const motors_thrust_pwm_t* motorPwm)
+ {
++  #ifndef CONFIG_PLATFORM_SITL
+   motorsSetRatio(MOTOR_M1, motorPwm->motors.m1);
+   motorsSetRatio(MOTOR_M2, motorPwm->motors.m2);
+   motorsSetRatio(MOTOR_M3, motorPwm->motors.m3);
+   motorsSetRatio(MOTOR_M4, motorPwm->motors.m4);
++  #else
++  motorsSetRatio(motorPwm);
++  #endif
+ }
+ 
+ static void updateStateEstimatorAndControllerTypes() {
+@@ -248,8 +258,12 @@ static void logCapWarning(const bool isCapped) {
+ 
+ static void controlMotors(const control_t* control) {
+   powerDistribution(control, &motorThrustUncapped);
++  #ifndef CONFIG_PLATFORM_SITL
+   batteryCompensation(&motorThrustUncapped, &motorThrustBatCompUncapped);
+   const bool isCapped = powerDistributionCap(&motorThrustBatCompUncapped, &motorPwm);
++  #else
++  const bool isCapped = powerDistributionCap(&motorThrustUncapped, &motorPwm);
++  #endif
+   logCapWarning(isCapped);
+   setMotorRatios(&motorPwm);
+ }
+@@ -288,15 +302,21 @@ static void stabilizerTask(void* param)
+     // update sensorData struct (for logging variables)
+     sensorsAcquire(&sensorData);
+ 
++    //TODO: Add health checking to SITL
++    #ifndef CONFIG_PLATFORM_SITL
+     if (healthShallWeRunTest()) {
+       healthRunTests(&sensorData);
+     } else {
++    #endif
+       updateStateEstimatorAndControllerTypes();
+ 
+       stateEstimator(&state, stabilizerStep);
+-
++      
++      #ifndef CONFIG_PLATFORM_SITL
+       const bool areMotorsAllowedToRun = supervisorAreMotorsAllowedToRun();
+-
++      #else
++      const bool areMotorsAllowedToRun = true;
++      #endif
+       // Critical for safety, be careful if you modify this code!
+       crtpCommanderBlock(! areMotorsAllowedToRun);
+ 
+@@ -309,21 +329,27 @@ static void stabilizerTask(void* param)
+       // Let the supervisor update it's view of the current situation
+       supervisorUpdate(&sensorData, &setpoint, stabilizerStep);
+ 
++      // TODO: Add collision avoidance to SITL
++      #ifndef CONFIG_PLATFORM_SITL
+       // Let the collision avoidance module modify the setpoint, if needed
+       collisionAvoidanceUpdateSetpoint(&setpoint, &sensorData, &state, stabilizerStep);
+-
++      #endif
+       // Critical for safety, be careful if you modify this code!
+       // Let the supervisor modify the setpoint to handle exceptional conditions
+       supervisorOverrideSetpoint(&setpoint);
+ 
+       controller(&control, &setpoint, &sensorData, &state, stabilizerStep);
+-
++      // DEBUG_PRINT("setpoint | x: %f y: %f z: %f roll: %f pitch %f yaw %f \n", 
++      //   setpoint.position.x, setpoint.position.y, setpoint.position.z,
++      //   setpoint.attitude.roll, setpoint.attitude.pitch, setpoint.attitude.yaw);
+       // Critical for safety, be careful if you modify this code!
+       // The supervisor will already set thrust to 0 in the setpoint if needed, but to be extra sure prevent motors from running.
+       if (areMotorsAllowedToRun) {
+         controlMotors(&control);
+       } else {
++        #ifndef CONFIG_PLATFORM_SITL
+         motorsStop();
++        #endif
+       }
+ 
+       // Compute compressed log formats
+@@ -344,11 +370,13 @@ static void stabilizerTask(void* param)
+ 
+       if (!rateSupervisorValidate(&rateSupervisorContext, xTaskGetTickCount())) {
+         if (!rateWarningDisplayed) {
+-          DEBUG_PRINT("WARNING: stabilizer loop rate is off (%lu)\n", rateSupervisorLatestCount(&rateSupervisorContext));
++          DEBUG_PRINT("WARNING: stabilizer loop rate is off (%lu)\n", (unsigned long)rateSupervisorLatestCount(&rateSupervisorContext));
+           rateWarningDisplayed = true;
+         }
+       }
++    #ifndef CONFIG_PLATFORM_SITL
+     }
++    #endif
+ #ifdef CONFIG_MOTORS_ESC_PROTOCOL_DSHOT
+     motorsBurstDshot();
+ #endif
+@@ -814,7 +842,6 @@ LOG_ADD(LOG_INT16, ratePitch, &stateCompressed.ratePitch)
+ LOG_ADD(LOG_INT16, rateYaw, &stateCompressed.rateYaw)
+ LOG_GROUP_STOP(stateEstimateZ)
+ 
+-
+ LOG_GROUP_START(motor)
+ 
+ /**
+diff --git a/src/modules/src/supervisor.c b/src/modules/src/supervisor.c
+index 66649ca3..3e8cd6fd 100644
+--- a/src/modules/src/supervisor.c
++++ b/src/modules/src/supervisor.c
+@@ -34,14 +34,18 @@
+ 
+ #include "log.h"
+ #include "param.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "motors.h"
++#endif
+ #include "power_distribution.h"
+ #include "supervisor.h"
+ #include "supervisor_state_machine.h"
+ #include "platform_defaults.h"
+ #include "crtp_localization_service.h"
+ #include "system.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #define DEBUG_MODULE "SUP"
+ #include "debug.h"
+@@ -166,12 +170,13 @@ bool supervisorRequestArming(const bool doArm) {
+   return true;
+ }
+ 
+-//
++//`
+ // We say we are flying if one or more motors are running over the idle thrust.
+ //
+ static bool isFlyingCheck(SupervisorMem_t* this, const uint32_t tick) {
+   bool isThrustOverIdle = false;
+   const uint32_t idleThrust = powerDistributionGetIdleThrust();
++  #ifndef CONFIG_PLATFORM_SITL
+   for (int i = 0; i < NBR_OF_MOTORS; ++i) {
+     const uint32_t ratio = powerDistributionMotorType(i) * motorsGetRatio(i);
+     if (ratio > idleThrust) {
+@@ -179,7 +184,15 @@ static bool isFlyingCheck(SupervisorMem_t* this, const uint32_t tick) {
+       break;
+     }
+   }
+-
++  #else
++  for (int i = 0; i < NBR_OF_MOTORS; ++i) {
++    uint16_t ratio = getMotorRatio(i);
++    if (ratio > idleThrust) {
++      isThrustOverIdle = true;
++      break;
++    }
++  }
++  #endif
+   if (isThrustOverIdle) {
+     this->latestThrustTick = tick;
+   }
+@@ -442,7 +455,7 @@ bool supervisorAreMotorsAllowedToRun() {
+ void infoDump(const SupervisorMem_t* this) {
+   DEBUG_PRINT("Supervisor info ---\n");
+   DEBUG_PRINT("State: %s\n", supervisorGetStateName(this->state));
+-  DEBUG_PRINT("Conditions: (0x%lx)\n", this->latestConditions);
++  DEBUG_PRINT("Conditions: (0x%x)\n", this->latestConditions);
+   for (supervisorConditions_t condition = 0; condition < supervisorCondition_NrOfConditions; condition++) {
+     const supervisorConditionBits_t bit = 1 << condition;
+     int bitValue = 0;
+@@ -450,7 +463,7 @@ void infoDump(const SupervisorMem_t* this) {
+       bitValue = 1;
+     }
+ 
+-    DEBUG_PRINT("  %s (0x%lx): %u\n", supervisorGetConditionName(condition), bit, bitValue);
++    DEBUG_PRINT("  %s (0x%x): %u\n", supervisorGetConditionName(condition), bit, bitValue);
+   }
+ }
+ 
+diff --git a/src/modules/src/system.c b/src/modules/src/system.c
+index 562252e1..d9e16565 100644
+--- a/src/modules/src/system.c
++++ b/src/modules/src/system.c
+@@ -38,40 +38,44 @@
+ #include "param.h"
+ #include "log.h"
+ #include "ledseq.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "pm.h"
++#endif
+ 
+ #include "system.h"
+ #include "platform.h"
+ #include "storage.h"
+ #include "configblock.h"
+ #include "worker.h"
+-#include "freeRTOSdebug.h"
+-#include "uart_syslink.h"
+-#include "uart1.h"
+-#include "uart2.h"
+ #include "comm.h"
+ #include "stabilizer.h"
+ #include "commander.h"
+ #include "console.h"
+-#include "usblink.h"
+ #include "mem.h"
+ #include "crtp_mem.h"
+-#include "proximity.h"
+-#include "watchdog.h"
+ #include "queuemonitor.h"
+ #include "buzzer.h"
+-#include "sound.h"
+ #include "sysload.h"
+ #include "estimator_kalman.h"
+ #include "estimator_ukf.h"
+-#include "deck.h"
+-#include "extrx.h"
+ #include "app.h"
+ #include "static_mem.h"
+ #include "peer_localization.h"
++#ifndef CONFIG_PLATFORM_SITL
++#include "freeRTOSdebug.h"
++#include "uart_syslink.h"
++#include "uart1.h"
++#include "uart2.h"
++#include "usblink.h"
++#include "proximity.h"
++#include "watchdog.h"
++#include "sound.h"
++#include "deck.h"
++#include "extrx.h"
+ #include "cfassert.h"
+ #include "i2cdev.h"
+ #include "autoconf.h"
++#endif
+ #include "vcp_esc_passthrough.h"
+ #if CONFIG_ENABLE_CPX
+   #include "cpxlink.h"
+@@ -110,7 +114,11 @@ void systemInit(void)
+   canStartMutex = xSemaphoreCreateMutexStatic(&canStartMutexBuffer);
+   xSemaphoreTake(canStartMutex, portMAX_DELAY);
+ 
++  #ifdef CONFIG_PLATFORM_SITL
++  socketlinkInit();
++  #else
+   usblinkInit();
++  #endif
+   sysLoadInit();
+ #if CONFIG_ENABLE_CPX
+   cpxlinkInit();
+@@ -130,18 +138,22 @@ void systemInit(void)
+     DEBUG_PRINT("Build %s:%s (%s) %s\n", V_SLOCAL_REVISION,
+                 V_SREVISION, V_STAG, (V_MODIFIED)?"MODIFIED":"CLEAN");
+   }
++  #ifndef CONFIG_PLATFORM_SITL
+   DEBUG_PRINT("I am 0x%08X%08X%08X and I have %dKB of flash!\n",
+               *((int*)(MCU_ID_ADDRESS+8)), *((int*)(MCU_ID_ADDRESS+4)),
+               *((int*)(MCU_ID_ADDRESS+0)), *((short*)(MCU_FLASH_SIZE_ADDRESS)));
++  #endif
+ 
+   configblockInit();
+-  storageInit();
+   workerInit();
+-  adcInit();
++  buzzerInit();
+   ledseqInit();
++  #ifndef CONFIG_PLATFORM_SITL
++  storageInit();
++  adcInit();
+   pmInit();
+-  buzzerInit();
+   peerLocalizationInit();
++  #endif
+ 
+ #ifdef CONFIG_APP_ENABLE
+   appInit();
+@@ -153,9 +165,10 @@ void systemInit(void)
+ bool systemTest()
+ {
+   bool pass=isInit;
+-
+   pass &= ledseqTest();
++  #ifndef CONFIG_PLATFORM_SITL
+   pass &= pmTest();
++  #endif
+   pass &= workerTest();
+   pass &= buzzerTest();
+   return pass;
+@@ -166,7 +179,6 @@ bool systemTest()
+ void systemTask(void *arg)
+ {
+   bool pass = true;
+-
+   ledInit();
+   ledSet(CHG_LED, 1);
+ 
+@@ -177,11 +189,12 @@ void systemTask(void *arg)
+ #ifdef CONFIG_DEBUG_PRINT_ON_UART1
+   uart1Init(CONFIG_DEBUG_PRINT_ON_UART1_BAUDRATE);
+ #endif
+-
++  #ifndef CONFIG_PLATFORM_SITL
+   usecTimerInit();
+   i2cdevInit(I2C3_DEV);
+   i2cdevInit(I2C1_DEV);
+   passthroughInit();
++  #endif
+ 
+   //Init the high-levels modules
+   systemInit();
+@@ -200,24 +213,34 @@ void systemTask(void *arg)
+ 
+   // Enabling incoming syslink messages to be added to the queue.
+   // This should probably be done later, but deckInit() takes a long time if this is done later.
++  #ifndef CONFIG_PLATFORM_SITL
+   uartslkEnableIncoming();
++  #endif
+ 
+   memInit();
++  #ifndef CONFIG_PLATFORM_SITL
+   deckInit();
+   estimator = deckGetRequiredEstimator();
++  #else
++  // SITL: no deck driver, use CMake ESTIMATOR setting as initial default
++  estimator = ESTIMATOR;
++  #endif
+   stabilizerInit(estimator);
++  #ifndef CONFIG_PLATFORM_SITL
+   if (deckGetRequiredLowInterferenceRadioMode() && platformConfigPhysicalLayoutAntennasAreClose())
+   {
+     platformSetLowInterferenceRadioMode();
+   }
+   soundInit();
++  #endif
+   crtpMemInit();
+ 
+ #ifdef PROXIMITY_ENABLED
+   proximityInit();
+ #endif
+-
++  #ifndef CONFIG_PLATFORM_SITL
+   systemRequestNRFVersion();
++  #endif
+ 
+   //Test the modules
+   DEBUG_PRINT("About to run tests in system.c.\n");
+@@ -229,10 +252,12 @@ void systemTask(void *arg)
+     pass = false;
+     DEBUG_PRINT("configblock [FAIL]\n");
+   }
++  #ifndef CONFIG_PLATFORM_SITL
+   if (storageTest() == false) {
+     pass = false;
+     DEBUG_PRINT("storage [FAIL]\n");
+   }
++  #endif
+   if (commTest() == false) {
+     pass = false;
+     DEBUG_PRINT("comm [FAIL]\n");
+@@ -259,7 +284,7 @@ void systemTask(void *arg)
+     DEBUG_PRINT("estimatorUKFTask [FAIL]\n");
+   }
+   #endif
+-
++  #ifndef CONFIG_PLATFORM_SITL
+   if (deckTest() == false) {
+     pass = false;
+     DEBUG_PRINT("deck [FAIL]\n");
+@@ -268,6 +293,7 @@ void systemTask(void *arg)
+     pass = false;
+     DEBUG_PRINT("sound [FAIL]\n");
+   }
++  #endif
+   if (memTest() == false) {
+     pass = false;
+     DEBUG_PRINT("mem [FAIL]\n");
+@@ -276,6 +302,7 @@ void systemTask(void *arg)
+     pass = false;
+     DEBUG_PRINT("CRTP mem [FAIL]\n");
+   }
++  #ifndef CONFIG_PLATFORM_SITL
+   if (watchdogNormalStartTest() == false) {
+     pass = false;
+     DEBUG_PRINT("watchdogNormalStart [FAIL]\n");
+@@ -288,6 +315,7 @@ void systemTask(void *arg)
+     pass = false;
+     DEBUG_PRINT("peerLocalization [FAIL]\n");
+   }
++  #endif
+ 
+   //Start the firmware
+   if(pass)
+@@ -295,7 +323,9 @@ void systemTask(void *arg)
+     DEBUG_PRINT("Self test passed!\n");
+     selftestPassed = 1;
+     systemStart();
++    #ifndef CONFIG_PLATFORM_SITL
+     soundSetEffect(SND_STARTUP);
++    #endif
+     ledseqRun(&seq_alive);
+     ledseqRun(&seq_testPassed);
+   }
+@@ -323,8 +353,9 @@ void systemTask(void *arg)
+       ledSet(SYS_LED, true);
+     }
+   }
++  #ifndef CONFIG_PLATFORM_SITL
+   DEBUG_PRINT("Free heap: %d bytes\n", xPortGetFreeHeapSize());
+-
++  #endif
+   workerLoop();
+ 
+   //Should never reach this point!
+@@ -337,9 +368,11 @@ void systemTask(void *arg)
+ void systemStart()
+ {
+   xSemaphoreGive(canStartMutex);
++#ifndef CONFIG_PLATFORM_SITL
+ #ifndef DEBUG
+   watchdogInit();
+ #endif
++#endif
+ }
+ 
+ void systemWaitStart(void)
+@@ -353,6 +386,7 @@ void systemWaitStart(void)
+   xSemaphoreGive(canStartMutex);
+ }
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ void systemRequestShutdown()
+ {
+   SyslinkPacket slp;
+@@ -364,11 +398,13 @@ void systemRequestShutdown()
+ 
+ void systemRequestNRFVersion()
+ {
++  
+   SyslinkPacket slp;
+ 
+   slp.type = SYSLINK_SYS_NRF_VERSION;
+   slp.length = 0;
+   syslinkSendPacket(&slp);
++  
+ }
+ 
+ void systemSyslinkReceive(SyslinkPacket *slp)
+@@ -408,6 +444,7 @@ void vApplicationIdleHook( void )
+   { __asm volatile ("wfi"); }
+ #endif
+ }
++#endif
+ 
+ static void doAssertCallback(void) {
+   if (doAssert) {
+@@ -415,6 +452,7 @@ static void doAssertCallback(void) {
+   }
+ }
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ /**
+  * This parameter group contain read-only parameters pertaining to the CPU
+  * in the Crazyflie.
+@@ -444,6 +482,7 @@ PARAM_ADD_CORE(PARAM_UINT32 | PARAM_RONLY, id1, MCU_ID_ADDRESS+4)
+ PARAM_ADD_CORE(PARAM_UINT32 | PARAM_RONLY, id2, MCU_ID_ADDRESS+8)
+ 
+ PARAM_GROUP_STOP(cpu)
++#endif
+ 
+ PARAM_GROUP_START(system)
+ 
+diff --git a/src/platform/interface/platform.h b/src/platform/interface/platform.h
+index 1a47e171..5374555c 100644
+--- a/src/platform/interface/platform.h
++++ b/src/platform/interface/platform.h
+@@ -27,9 +27,14 @@
+ #define PLATFORM_H_
+ 
+ #include <stdbool.h>
++
++#ifndef CONFIG_PLATFORM_SITL
+ #include "motors.h"
++#endif
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #define PLATFORM_DEVICE_TYPE_STRING_MAX_LEN (32 + 1)
+ #define PLATFORM_DEVICE_TYPE_MAX_LEN (4 + 1)
+@@ -51,6 +56,10 @@ typedef enum {
+   SensorImplementation_bosch,
+   #endif
+ 
++  #ifdef CONFIG_SENSORS_SITL
++  SensorImplementation_sitl,
++  #endif
++
+   SensorImplementation_COUNT,
+ } SensorImplementation_t;
+ 
+@@ -59,7 +68,9 @@ typedef struct {
+   char deviceTypeName[30];
+   SensorImplementation_t sensorImplementation;
+   bool physicalLayoutAntennasAreClose;
++  #ifndef CONFIG_SENSORS_SITL
+   const MotorPerifDef** motorMap;
++  #endif
+ } platformConfig_t;
+ 
+ /**
+@@ -84,6 +95,8 @@ const char* platformConfigGetDeviceType();
+ const char* platformConfigGetDeviceTypeName();
+ SensorImplementation_t platformConfigGetSensorImplementation();
+ bool platformConfigPhysicalLayoutAntennasAreClose();
++#ifndef CONFIG_PLATFORM_SITL
+ const MotorPerifDef** platformConfigGetMotorMapping();
++#endif
+ 
+ #endif /* PLATFORM_H_ */
+diff --git a/src/platform/interface/platform_defaults.h b/src/platform/interface/platform_defaults.h
+index e85abfb7..184f712b 100644
+--- a/src/platform/interface/platform_defaults.h
++++ b/src/platform/interface/platform_defaults.h
+@@ -27,7 +27,9 @@
+ 
+ #pragma once
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #define __INCLUDED_FROM_PLATFORM_DEFAULTS__
+ 
+@@ -43,6 +45,9 @@
+ #ifdef CONFIG_PLATFORM_FLAPPER
+     #include "platform_defaults_flapper.h"
+ #endif
++#ifdef CONFIG_PLATFORM_SITL
++    #include "platform_defaults_sitl.h"
++#endif
+ 
+ // Drone physical constants
+ // TODO provide those in each config. Those are values of cf2 platform
+diff --git a/src/platform/interface/platform_defaults_sitl.h b/src/platform/interface/platform_defaults_sitl.h
+new file mode 100644
+index 00000000..11a92396
+--- /dev/null
++++ b/src/platform/interface/platform_defaults_sitl.h
+@@ -0,0 +1,125 @@
++/**
++ * ,---------,       ____  _ __
++ * |  ,-^-,  |      / __ )(_) /_______________ _____  ___
++ * | (  O  ) |     / __  / / __/ ___/ ___/ __ `/_  / / _ \
++ * | / ,--´  |    / /_/ / / /_/ /__/ /  / /_/ / / /_/  __/
++ *    +------`   /_____/_/\__/\___/_/   \__,_/ /___/\___/
++ *
++ * Crazyflie control firmware
++ *
++ * Copyright (C) 2022 Bitcraze AB
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, in version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ *
++ *
++ * platform_defaults_sitl.h - platform specific default values for the sitl platform
++ */
++
++#pragma once
++
++#ifndef __INCLUDED_FROM_PLATFORM_DEFAULTS__
++    #pragma GCC error "Do not include this file directly, include platform_defaults.h instead."
++#endif
++
++// Defines for default values in the cf2 platform
++
++// Default values for battery limits
++#define DEFAULT_BAT_LOW_VOLTAGE                   3.2f
++#define DEFAULT_BAT_CRITICAL_LOW_VOLTAGE          3.0f
++#define DEFAULT_BAT_LOW_DURATION_TO_TRIGGER_SEC   5
++
++// Default value for system shutdown in minutes after radio silence.
++// Requires kbuild config ENABLE_AUTO_SHUTDOWN to be activated.
++#define DEFAULT_SYSTEM_SHUTDOWN_TIMEOUT_MIN       5
++
++// Default PID gains
++#define PID_ROLL_RATE_KP  250.0
++#define PID_ROLL_RATE_KI  500.0
++#define PID_ROLL_RATE_KD  2.5
++#define PID_ROLL_RATE_KFF 0.0
++#define PID_ROLL_RATE_INTEGRATION_LIMIT    33.3
++
++#define PID_PITCH_RATE_KP  250.0
++#define PID_PITCH_RATE_KI  500.0
++#define PID_PITCH_RATE_KD  2.5
++#define PID_PITCH_RATE_KFF 0.0
++#define PID_PITCH_RATE_INTEGRATION_LIMIT   33.3
++
++#define PID_YAW_RATE_KP  120.0
++#define PID_YAW_RATE_KI  16.7
++#define PID_YAW_RATE_KD  0.0
++#define PID_YAW_RATE_KFF 0.0
++#define PID_YAW_RATE_INTEGRATION_LIMIT     166.7
++
++#define PID_ROLL_KP  6.0
++#define PID_ROLL_KI  3.0
++#define PID_ROLL_KD  0.0
++#define PID_ROLL_KFF 0.0
++#define PID_ROLL_INTEGRATION_LIMIT    20.0
++
++#define PID_PITCH_KP  6.0
++#define PID_PITCH_KI  3.0
++#define PID_PITCH_KD  0.0
++#define PID_PITCH_KFF 0.0
++#define PID_PITCH_INTEGRATION_LIMIT   20.0
++
++#define PID_YAW_KP  6.0
++#define PID_YAW_KI  1.0
++#define PID_YAW_KD  0.35
++#define PID_YAW_KFF 0.0
++#define PID_YAW_INTEGRATION_LIMIT     360.0
++
++#define PID_VEL_X_KP 25.0f
++#define PID_VEL_X_KI 1.0f
++#define PID_VEL_X_KD 0.0f
++#define PID_VEL_X_KFF 0.0f
++
++#define PID_VEL_Y_KP 25.0f
++#define PID_VEL_Y_KI 1.0f
++#define PID_VEL_Y_KD 0.0f
++#define PID_VEL_Y_KFF 0.0f
++
++#define PID_VEL_Z_KP 25.0f
++#define PID_VEL_Z_KI 15.0f
++#define PID_VEL_Z_KD 0.0f
++#define PID_VEL_Z_KFF 0.0f
++
++#define PID_VEL_Z_KP_BARO_Z_HOLD 3.0f
++#define PID_VEL_Z_KI_BARO_Z_HOLD 1.0f
++#define PID_VEL_Z_KD_BARO_Z_HOLD 1.5f
++#define PID_VEL_Z_KFF_BARO_Z_HOLD 0.0f
++
++#define PID_VEL_ROLL_MAX 20.0f
++#define PID_VEL_PITCH_MAX 20.0f
++#define PID_VEL_THRUST_BASE 36000.0f
++#define PID_VEL_THRUST_BASE_BARO_Z_HOLD 38000.0f
++#define PID_VEL_THRUST_MIN 20000.0f
++
++#define PID_POS_X_KP 2.0f
++#define PID_POS_X_KI 0.0f
++#define PID_POS_X_KD 0.0f
++#define PID_POS_X_KFF 0.0f
++
++#define PID_POS_Y_KP 2.0f
++#define PID_POS_Y_KI 0.0f
++#define PID_POS_Y_KD 0.0f
++#define PID_POS_Y_KFF 0.0f
++
++#define PID_POS_Z_KP 2.0f
++#define PID_POS_Z_KI 0.5f
++#define PID_POS_Z_KD 0.0f
++#define PID_POS_Z_KFF 0.0f
++
++#define PID_POS_VEL_X_MAX 1.0f
++#define PID_POS_VEL_Y_MAX 1.0f
++#define PID_POS_VEL_Z_MAX 1.0f
+diff --git a/src/platform/src/platform.c b/src/platform/src/platform.c
+index f1dccf98..98f63000 100644
+--- a/src/platform/src/platform.c
++++ b/src/platform/src/platform.c
+@@ -109,7 +109,8 @@ SensorImplementation_t platformConfigGetSensorImplementation() {
+ bool platformConfigPhysicalLayoutAntennasAreClose() {
+   return active_config->physicalLayoutAntennasAreClose;
+ }
+-
++#ifndef CONFIG_PLATFORM_SITL
+ const MotorPerifDef** platformConfigGetMotorMapping() {
+   return active_config->motorMap;
+ }
++#endif
+\ No newline at end of file
+diff --git a/src/platform/src/platform_sitl.c b/src/platform/src/platform_sitl.c
+new file mode 100644
+index 00000000..d0d41ec9
+--- /dev/null
++++ b/src/platform/src/platform_sitl.c
+@@ -0,0 +1,64 @@
++/**
++ * ,---------,       ____  _ __
++ * |  ,-^-,  |      / __ )(_) /_______________ _____  ___
++ * | (  O  ) |     / __  / / __/ ___/ ___/ __ `/_  / / _ \
++ * | / ,--´  |    / /_/ / / /_/ /__/ /  / /_/ / / /_/  __/
++ *    +------`   /_____/_/\__/\___/_/   \__,_/ /___/\___/
++ *
++ * Crazyflie control firmware
++ *
++ * Copyright (C) 2022 Bitcraze AB
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, in version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ *
++ *
++ * platform_bolt.c - platform functionality for the Crazyflie Bolt
++ */
++
++
++#define DEBUG_MODULE "PLATFORM"
++
++#include <string.h>
++
++#include "platform.h"
++#include "debug.h"
++
++static platformConfig_t configs[] = {
++#ifdef CONFIG_SENSORS_SITL
++  {
++    .deviceType = "SITL",
++    .deviceTypeName = "Software-in-the-Loop Simulator",
++    .sensorImplementation = SensorImplementation_sitl,
++    .physicalLayoutAntennasAreClose = false,
++  }
++#endif
++};
++
++const platformConfig_t* platformGetListOfConfigurations(int* nrOfConfigs) {
++  *nrOfConfigs = sizeof(configs) / sizeof(platformConfig_t);
++  return configs;
++}
++
++void platformInitHardware() {
++
++}
++
++void platformGetDeviceTypeString(char* deviceTypeString) {
++  strcpy(deviceTypeString, "0;SITL");
++}
++
++// Config functions ------------------------
++
++const char* platformConfigGetPlatformName() {
++  return "sitl";
++}
+diff --git a/src/utils/interface/cf_math.h b/src/utils/interface/cf_math.h
+index c947d400..78d07a89 100644
+--- a/src/utils/interface/cf_math.h
++++ b/src/utils/interface/cf_math.h
+@@ -27,6 +27,7 @@
+ 
+ // Include "arm_math.h". This header generates some warnings, especially in
+ // unit tests. We hide them to avoid noise.
++#ifndef CONFIG_PLATFORM_SITL
+ #pragma GCC diagnostic push
+ #pragma GCC diagnostic ignored "-Wpedantic"
+ #pragma GCC diagnostic ignored "-Wpointer-to-int-cast"
+@@ -34,7 +35,10 @@
+ #pragma GCC diagnostic ignored "-Wunused-parameter"
+ #include "arm_math.h"
+ #pragma GCC diagnostic pop
+-
++#else
++#include "FreeRTOSConfig.h"
++#include "math.h"
++#endif
+ #include "cfassert.h"
+ 
+ 
+@@ -55,6 +59,7 @@
+     _a > _b ? _a : _b;      \
+   })
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ // Matrix data must be aligned on 4 byte bundaries
+ static inline void assert_aligned_4_bytes(const arm_matrix_instance_f32* matrix) {
+   const uint32_t address = (uint32_t)matrix->pData;
+@@ -93,6 +98,74 @@ static inline float arm_sqrt(float32_t in) {
+   return pOut;
+ }
+ 
++static inline void mat_scale(const arm_matrix_instance_f32 * pSrcA, float32_t scale, arm_matrix_instance_f32 * pDst) {
++  arm_status result = arm_mat_scale_f32(pSrcA, scale, pDst);
++  ASSERT(ARM_MATH_SUCCESS == result);
++}
++
++#else
++
++#include <string.h>
++
++#define PI                            3.1415926f
++#define arm_matrix_instance_f32       Matrixf
++#define arm_sqrt(x)                   sqrtf(x)
++#define arm_sqrt_f32(x)               sqrtf(x)
++#define arm_cos_f32(x)                cosf(x)
++#define arm_sin_f32(x)                sinf(x)
++
++typedef float float32_t;
++
++typedef struct{
++  uint16_t numRows;
++  uint16_t numCols;
++  float *pData;
++} Matrixf; 
++
++
++static inline void mat_trans(const arm_matrix_instance_f32 * pSrc, arm_matrix_instance_f32 * pDst)
++{ 
++  bool is_valid = (pSrc->numRows == pDst->numCols) && (pSrc->numCols == pDst->numRows);
++  configASSERT(is_valid);
++  uint8_t i,j;
++  for (i=0 ; i< pSrc->numRows; i++){
++    for(j=0 ; j< pSrc->numCols; j++){
++      pDst->pData[j * pDst->numCols + i] = pSrc->pData[i*pSrc->numCols + j];
++    }
++  } 
++}
++
++static inline void mat_mult(const arm_matrix_instance_f32 * pSrcA, const arm_matrix_instance_f32 * pSrcB, arm_matrix_instance_f32 * pDst)
++{ 
++  bool is_valid = (pSrcA->numCols == pSrcB->numRows) && (pSrcA->numRows == pDst->numRows) && (pSrcB->numCols == pDst->numCols);
++  configASSERT(is_valid);
++  uint8_t i,j,k;
++  for(i=0; i< pDst->numRows ; i++){
++    for(j=0; j<pDst->numCols ; j++){
++      pDst->pData[j+ i*pDst->numCols] = 0.0f;
++    }
++  }
++  for(i=0; i< pDst->numRows ; i++){
++    for(j=0; j<pDst->numCols ; j++){
++      for(k=0; k<pSrcA->numCols; k++){
++        pDst->pData[j+ i*pDst->numCols] += pSrcA->pData[i*pSrcA->numCols + k ] * pSrcB->pData[k*pSrcB->numCols + j];
++      }
++    }
++  }
++}
++
++static inline void mat_scale(const arm_matrix_instance_f32 * pSrcA, float32_t scale, arm_matrix_instance_f32 * pDst) {
++  bool is_valid = (pSrcA->numRows == pDst->numRows) && (pSrcA->numCols == pDst->numCols);
++  configASSERT(is_valid);
++  uint8_t i,j;
++  for (i=0 ; i< pSrcA->numRows; i++){
++    for(j=0 ; j< pSrcA->numCols; j++){
++      pDst->pData[i * pDst->numCols + j] = scale * pSrcA->pData[i*pSrcA->numCols + j];
++    }
++  } 
++}
++#endif
++
+ static inline float limPos(float in) {
+   if (in < 0.0f) {
+     return 0.0f;
+@@ -113,7 +186,3 @@ static inline float clip1(float a) {
+   return a;
+ }
+ 
+-static inline void mat_scale(const arm_matrix_instance_f32 * pSrcA, float32_t scale, arm_matrix_instance_f32 * pDst) {
+-  arm_status result = arm_mat_scale_f32(pSrcA, scale, pDst);
+-  ASSERT(ARM_MATH_SUCCESS == result);
+-}
+diff --git a/src/utils/interface/cfassert.h b/src/utils/interface/cfassert.h
+index 3d608597..54610413 100644
+--- a/src/utils/interface/cfassert.h
++++ b/src/utils/interface/cfassert.h
+@@ -29,6 +29,24 @@
+ #ifndef __CFASSERT_H__
+ #define __CFASSERT_H__
+ 
++#ifdef CONFIG_PLATFORM_SITL
++
++#define ASSERT(e)  if (e) ; \
++        else vAssertCalled( __LINE__ , __FILE__)
++
++#ifdef DEBUG
++#define IF_DEBUG_ASSERT(e)  if (e) ; \
++        else vAssertCalled(__LINE__ , __FILE__)
++#else
++#define IF_DEBUG_ASSERT(e)
++#endif
++
++#define ASSERT_FAILED() vAssertCalled(__LINE__ , __FILE__)
++
++#else // Case no simulation
++
++
++
+ #define ASSERT(e)  if (e) ; \
+         else assertFail( #e, __FILE__, __LINE__ )
+ 
+@@ -97,4 +115,5 @@ void storeAssertTextData(const char *text);
+  */
+ bool cfAssertNormalStartTest(void);
+ 
++#endif // SITL
+ #endif //__CFASSERT_H__
+diff --git a/src/utils/interface/debug.h b/src/utils/interface/debug.h
+index 22539e3b..d90c4c79 100644
+--- a/src/utils/interface/debug.h
++++ b/src/utils/interface/debug.h
+@@ -28,7 +28,9 @@
+ 
+ #include "config.h"
+ #include "console.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #ifdef CONFIG_DEBUG_PRINT_ON_UART1
+   #include "uart1.h"
+@@ -59,6 +61,10 @@ void debugInit(void);
+ #elif defined(DEBUG_PRINT_ON_SWO)
+   #define DEBUG_PRINT(fmt, ...) eprintf(ITM_SendChar, fmt, ## __VA_ARGS__)
+   #define DEBUG_PRINT_OS(fmt, ...) eprintf(ITM_SendChar, fmt, ## __VA_ARGS__)
++#elif defined(CONFIG_PLATFORM_SITL)
++  #include <stdio.h>
++  #define DEBUG_PRINT(fmt, ...) printf(DEBUG_FMT(fmt), ##__VA_ARGS__)
++  #define DEBUG_PRINT_OS(fmt, ...) printf(DEBUG_FMT(fmt), ##__VA_ARGS__)
+ #elif defined(DEBUG_PRINT_ON_SEGGER_RTT)
+   #define DEBUG_PRINT(fmt, ...) SEGGER_RTT_printf(0, fmt, ## __VA_ARGS__)
+   #define DEBUG_PRINT_OS(fmt, ...) SEGGER_RTT_printf(0, fmt, ## __VA_ARGS__)
+diff --git a/src/utils/interface/lighthouse/pulse_processor.h b/src/utils/interface/lighthouse/pulse_processor.h
+index cb434b33..0c14df21 100644
+--- a/src/utils/interface/lighthouse/pulse_processor.h
++++ b/src/utils/interface/lighthouse/pulse_processor.h
+@@ -36,7 +36,9 @@
+ #include "lighthouse_calibration.h"
+ #include "lighthouse_geometry.h"
+ 
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #define PULSE_PROCESSOR_N_SWEEPS 2
+ #define PULSE_PROCESSOR_N_SENSORS 4
+diff --git a/src/utils/interface/num.h b/src/utils/interface/num.h
+index c1e8b07a..3b961996 100644
+--- a/src/utils/interface/num.h
++++ b/src/utils/interface/num.h
+@@ -29,6 +29,10 @@
+ 
+ #include <stdint.h>
+ 
++#ifdef CONFIG_PLATFORM_SITL
++#include <math.h>
++#endif
++
+ uint16_t single2half(float number);
+ float half2single(uint16_t number);
+ 
+diff --git a/src/utils/interface/tdoa/tdoaEngine.h b/src/utils/interface/tdoa/tdoaEngine.h
+index 022a03e3..9f9d7781 100644
+--- a/src/utils/interface/tdoa/tdoaEngine.h
++++ b/src/utils/interface/tdoa/tdoaEngine.h
+@@ -3,7 +3,9 @@
+ 
+ #include "tdoaStorage.h"
+ #include "tdoaStats.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ #if CONFIG_DECK_LOCO_LONGER_RANGE
+ #define TDOA_ENGINE_MEASUREMENT_NOISE_STD 0.30f
+diff --git a/src/utils/src/cfassert.c b/src/utils/src/cfassert.c
+index dbe7ab6a..4d1bc1d2 100644
+--- a/src/utils/src/cfassert.c
++++ b/src/utils/src/cfassert.c
+@@ -29,8 +29,10 @@
+ #include <stdint.h>
+ #include "FreeRTOS.h"
+ #include "cfassert.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "led.h"
+ #include "motors.h"
++#endif
+ #include "debug.h"
+ 
+ #define MAGIC_ASSERT_INDICATOR 0x2f8a001f
+@@ -80,9 +82,12 @@ static enum snapshotType_e currentType = SnapshotTypeNone;
+ void assertFail(char *exp, char *file, int line)
+ {
+   portDISABLE_INTERRUPTS();
++  #ifndef CONFIG_PLATFORM_SITL
+   storeAssertFileData(file, line);
++  #endif
+   DEBUG_PRINT("Assert failed %s:%d\n", file, line);
+ 
++  #ifndef CONFIG_PLATFORM_SITL
+   motorsStop();
+   ledShowFaultPattern();
+ 
+@@ -91,6 +96,7 @@ void assertFail(char *exp, char *file, int line)
+     // Only reset if debugger is not connected
+     NVIC_SystemReset();
+   }
++  #endif
+ }
+ 
+ void storeAssertFileData(const char *file, int line)
+diff --git a/src/utils/src/configblocksitl.c b/src/utils/src/configblocksitl.c
+new file mode 100644
+index 00000000..29ffeabf
+--- /dev/null
++++ b/src/utils/src/configblocksitl.c
+@@ -0,0 +1,82 @@
++/*
++ *    ||          ____  _ __                           
++ * +------+      / __ )(_) /_______________ _____  ___ 
++ * | 0xBC |     / __  / / __/ ___/ ___/ __ `/_  / / _ \
++ * +------+    / /_/ / / /_/ /__/ /  / /_/ / / /_/  __/
++ *  ||  ||    /_____/_/\__/\___/_/   \__,_/ /___/\___/
++ *
++ * Crazyflie simulation firmware
++ *
++ * Copyright (c) 2018  Eric Goubault, Sylvie Putot, Franck Djeumou
++ *             Cosynux , LIX , France
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, in version 3.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program. If not, see <http://www.gnu.org/licenses/>.
++ *
++ * configblocksitl.c - Simple static implementation of the config block
++ * remove driver/low level dependencies and basically return static variables
++ * for every functions
++ */
++#define DEBUG_MODULE "CFGBLK"
++
++#include <stdint.h>
++#include <stdbool.h>
++#include <unistd.h>
++#include <string.h>
++
++#include "config.h"
++#include "debug.h"
++#include "configblock.h"
++
++
++static bool isInit = false;
++
++int configblockInit(void)
++{
++  if(isInit)
++    return 0;
++
++  isInit = true;
++
++  return 0;
++}
++
++bool configblockTest(void)
++{
++  return true;
++}
++
++/* Static accessors */
++int configblockGetRadioChannel(void)
++{
++    return RADIO_CHANNEL;
++}
++
++int configblockGetRadioSpeed(void)
++{
++    return 0;
++}
++
++uint64_t configblockGetRadioAddress(void)
++{
++    return RADIO_ADDRESS;
++}
++
++float configblockGetCalibPitch(void)
++{
++    return 0;
++}
++
++float configblockGetCalibRoll(void)
++{
++    return 0;
++}
+\ No newline at end of file
+diff --git a/src/utils/src/lighthouse/pulse_processor.c b/src/utils/src/lighthouse/pulse_processor.c
+index d431ef51..3c822ec5 100644
+--- a/src/utils/src/lighthouse/pulse_processor.c
++++ b/src/utils/src/lighthouse/pulse_processor.c
+@@ -30,7 +30,9 @@
+ #include "pulse_processor_v1.h"
+ #include "pulse_processor_v2.h"
+ #include "cf_math.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ 
+ /**
+diff --git a/src/utils/src/lighthouse/pulse_processor_v1.c b/src/utils/src/lighthouse/pulse_processor_v1.c
+index a9cd1f6d..c6c7384f 100644
+--- a/src/utils/src/lighthouse/pulse_processor_v1.c
++++ b/src/utils/src/lighthouse/pulse_processor_v1.c
+@@ -32,7 +32,9 @@
+ #include <math.h>
+ #include "test_support.h"
+ #include "physicalConstants.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ // Decoding contants
+ // Times are expressed in a 24MHz clock
+diff --git a/src/utils/src/lighthouse/pulse_processor_v2.c b/src/utils/src/lighthouse/pulse_processor_v2.c
+index 1447c55c..81304878 100644
+--- a/src/utils/src/lighthouse/pulse_processor_v2.c
++++ b/src/utils/src/lighthouse/pulse_processor_v2.c
+@@ -33,7 +33,9 @@
+ #include "math3d.h"
+ #include "test_support.h"
+ #include "debug.h"
++#ifndef CONFIG_PLATFORM_SITL
+ #include "autoconf.h"
++#endif
+ 
+ static const uint32_t MAX_TICKS_SENSOR_TO_SENSOR = 10000;
+ static const uint32_t MAX_TICKS_BETWEEN_SWEEP_STARTS_TWO_BLOCKS = 10;
+diff --git a/tools/crazyflie-simulation b/tools/crazyflie-simulation
+new file mode 160000
+index 00000000..89d8cf79
+--- /dev/null
++++ b/tools/crazyflie-simulation
+@@ -0,0 +1 @@
++Subproject commit 89d8cf79fb722bf4bd7e363ade7d90d6c45d6d5d
