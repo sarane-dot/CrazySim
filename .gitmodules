@@ -1,6 +1,6 @@
 [submodule "crazyflie-firmware"]
 	path = crazyflie-firmware
-	url = https://github.com/llanesc/crazyflie-firmware.git
+	url = https://github.com/sarane-dot/crazyflie-firmware.git
 	branch = crazysim
 [submodule "crazyswarm2_ws/src/crazyswarm2"]
 	path = crazyswarm2_ws/src/crazyswarm2
